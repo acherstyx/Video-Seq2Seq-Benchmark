@@ -22,15 +22,15 @@ class AvgMeter:
         self.name = name
         self.val = self.sum = self.count = 0
         self.fmt = fmt
+        self.avg = 0
 
     def update(self, value, n=1):
+        if isinstance(value, torch.Tensor):
+            value = value.cpu().numpy()[0]
         self.val = value
         self.count += n
         self.sum += n * value
-
-    @property
-    def avg(self):
-        return self.sum / self.count
+        self.avg = self.sum / self.count
 
     def __str__(self):
         format_str = "{name} {val" + self.fmt + "}+({avg" + self.fmt + "})"

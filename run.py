@@ -13,6 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 parser = argparse.ArgumentParser(description="Performance test")
 
+parser.add_argument("mod", choices=["train", "eval"])
 parser.add_argument("--batch_size", "--bs", default=4, type=int)
 parser.add_argument("--log", "-l", default=None, type=str, required=True)
 parser.add_argument("--epoch", default=10, type=int)
@@ -32,39 +33,47 @@ def main():
     os.makedirs(ckp_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
-    # data
-    loader: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size)
     # net
     net: torch.nn.Module = model_zoo[args.model]()
+    summary(net, input_size=(3, 32, 112, 112), device="cpu")
+    # data
+    hmdb51_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=True)
+    hmdb51_test: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=False)
     # train
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
     writer = SummaryWriter(log_dir=log_dir)
 
-    summary(net, input_size=(3, 32, 112, 112), device="cpu")
+    if args.mod == "train":
+        for epoch in range(args.epoch):
+            train(hmdb51_train, net, optimizer, criterion, accuracy_metric, epoch, writer=writer)
 
-    for epoch in range(args.epoch):
-        train(loader, net, optimizer, criterion, accuracy_metric, epoch, writer=writer)
-
-        if (epoch + 1) % 5 == 0:
-            # save
-            ckp_file = "checkpoint_{}.pt".format(epoch + 1)
-            ckp_path = os.path.join(ckp_dir, ckp_file)
-            state_dict = {
-                "epoch": epoch + 1,
-                "arch": args.model,
-                "model_param": net.state_dict()
-            }
-            torch.save(state_dict, ckp_path)
+            if (epoch + 1) % 1 == 0:
+                # save
+                ckp_file = "checkpoint_{}.pt".format(epoch + 1)
+                ckp_path = os.path.join(ckp_dir, ckp_file)
+                state_dict = {
+                    "epoch": epoch + 1,
+                    "arch": args.model,
+                    "model_param": net.state_dict()
+                }
+                torch.save(state_dict, ckp_path)
+                # eval
+                loss, top1, top5 = eval(hmdb51_test, net, criterion, accuracy_metric)
+                writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch)
+                writer.add_scalar("eval/loss", loss, global_step=epoch)
+    else:
+        eval(hmdb51_test, net, criterion, accuracy_metric)
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
           criterion: torch.nn.Module, acc_metric, epoch, writer=None):
-    top1 = AvgMeter("Acc@1", ":6.2f")
-    top5 = AvgMeter("Acc@5", ":6.2f")
+    top1 = AvgMeter("Acc@1", ":4.2f")
+    top5 = AvgMeter("Acc@5", ":4.2f")
 
     net.cuda()
     data_loader = tqdm.tqdm(data_loader)
+    data_loader.set_description("Train")
     for step, (video, audio, label) in enumerate(data_loader):
         video = video.cuda()
         label = label.cuda()
@@ -83,6 +92,31 @@ def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.o
             total_step = step + epoch * len(data_loader)
             writer.add_scalars("train/acc", {"top1": top1.val, "top5": top5.val}, total_step)
             writer.add_scalar("train/loss", loss, total_step)
+
+
+def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metric):
+    top1 = AvgMeter("Acc@1", ":4.2f")
+    top5 = AvgMeter("Acc@5", ":4.2f")
+    avg_loss = AvgMeter("Loss", ":3.4f")
+
+    net.cuda()
+    data_loader = tqdm.tqdm(data_loader)
+    data_loader.set_description("Eval")
+    for step, (video, audio, label) in enumerate(data_loader):
+        video = video.cuda()
+        label = label.cuda()
+        net.training = False
+
+        logits = net(video)
+
+        loss = criterion(logits, label)
+        acc1, acc5 = acc_metric(logits, label, (1, 5))
+
+        avg_loss.update(loss, video.size(0))
+        top1.update(acc1, video.size(0))
+        top5.update(acc5, video.size(0))
+        data_loader.set_postfix_str(str(top1) + " " + str(top5))
+    return avg_loss.avg, top1.avg, top5.avg
 
 
 if __name__ == '__main__':

@@ -26,4 +26,5 @@ def build_hmdb51_loader(root, annotation, batch_size, train=True):
     if not os.path.exists(metadata_path):
         torch.save(hmdb51.metadata, metadata_path)
 
-    return data.DataLoader(hmdb51, batch_size, shuffle=True, num_workers=4)
+    return data.DataLoader(hmdb51, batch_size,
+                           shuffle=True, num_workers=16, pin_memory=True, prefetch_factor=128)
