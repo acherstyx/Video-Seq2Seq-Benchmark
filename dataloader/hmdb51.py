@@ -7,7 +7,7 @@ from torchvision.transforms._transforms_video import ToTensorVideo
 from torchvision.transforms import Resize, Compose
 
 
-def build_hmdb51_loader(root, annotation, batch_size):
+def build_hmdb51_loader(root, annotation, batch_size, train=True):
     frame_per_clip = 32
     resize = (112, 112)
 
@@ -22,7 +22,7 @@ def build_hmdb51_loader(root, annotation, batch_size):
     else:
         metadata = None
     hmdb51 = HMDB51(root, annotation, frame_per_clip,
-                    _precomputed_metadata=metadata, num_workers=4, transform=transforms)
+                    _precomputed_metadata=metadata, num_workers=4, transform=transforms, train=train)
     if not os.path.exists(metadata_path):
         torch.save(hmdb51.metadata, metadata_path)
 
