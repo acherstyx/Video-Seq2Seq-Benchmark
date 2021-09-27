@@ -22,6 +22,9 @@ parser.add_argument("--epoch", default=10, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
 parser.add_argument("--resume", type=str, default=None)
+parser.add_argument("--fpc", type=int, default=32, help="frame per clip")
+parser.add_argument("-W", "--width", type=int, default=112)
+parser.add_argument("-H", "--height", type=int, default=112)
 parser.add_argument("video", type=str, help="video dataset")
 parser.add_argument("annotation", type=str, help="annotation")
 
@@ -37,14 +40,16 @@ def main():
     # net
     net: torch.nn.Module = model_zoo[args.model]()
     # data
-    hmdb51_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=True)
-    hmdb51_test: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=False)
+    hmdb51_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=True,
+                                                        size=(args.width, args.height), frame_per_clip=args.fpc)
+    hmdb51_test: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=False,
+                                                       size=(args.width, args.height), frame_per_clip=args.fpc)
     # train
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
     writer = SummaryWriter(log_dir=log_dir)
     # tensorboard graph
-    summary_graph((7, 3, 32, 112, 112), net, writer)
+    summary_graph((7, 3, 64, 224, 224), net, writer)
 
     if args.resume is not None:
         state_dict = torch.load(args.resume)

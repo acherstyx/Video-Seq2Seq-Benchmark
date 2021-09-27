@@ -7,13 +7,10 @@ from torchvision.transforms._transforms_video import ToTensorVideo
 from torchvision.transforms import Resize, Compose
 
 
-def build_hmdb51_loader(root, annotation, batch_size, train=True):
-    frame_per_clip = 32
-    resize = (112, 112)
-
+def build_hmdb51_loader(root, annotation, batch_size, frame_per_clip=32, size=(112, 112), train=True):
     transforms = Compose([
         ToTensorVideo(),
-        Resize(resize)
+        Resize(size)
     ])
 
     metadata_path = os.path.join(root, "metadata_cache.pt")

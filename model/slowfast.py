@@ -54,12 +54,13 @@ class SlowFast(nn.Module):
 
     def __init__(self):
         super(SlowFast, self).__init__()
-        self.slow_data = nn.Sequential(nn.Conv3d(3, 3, (1, 1, 1), stride=(8, 1, 1)),
+        self.dropout = nn.Dropout3d()
+        self.slow_data = nn.Sequential(nn.Conv3d(3, 3, (1, 1, 1), stride=(16, 1, 1)),
                                        nn.Conv3d(3, 64, (1, 7, 7), stride=(1, 1, 1), padding=(0, 3, 3)),
-                                       nn.MaxPool3d((1, 3, 3), (1, 1, 1), padding=(0, 1, 1)))
-        self.fast_data = nn.Sequential(nn.Conv3d(3, 3, (1, 1, 1), stride=(1, 1, 1)),
+                                       nn.MaxPool3d((1, 3, 3), (1, 2, 2), padding=(0, 1, 1)))
+        self.fast_data = nn.Sequential(nn.Conv3d(3, 3, (1, 1, 1), stride=(2, 1, 1)),
                                        nn.Conv3d(3, 8, (5, 7, 7), stride=(1, 1, 1), padding=(2, 3, 3)),
-                                       nn.MaxPool3d((1, 3, 3), (1, 1, 1), padding=(0, 1, 1)))
+                                       nn.MaxPool3d((1, 3, 3), (1, 2, 2), padding=(0, 1, 1)))
         self.slow_res = [{
             "kernel": ((1, 1, 1), (1, 3, 3), (1, 1, 1)),
             "channel": (64, 64, 256),
@@ -98,6 +99,10 @@ class SlowFast(nn.Module):
         self.relu = nn.ReLU()
         self.fast_pathway_stages = self.make_fast_pathway(8, self.fast_res)
         self.lateral_conv, self.slow_pathway_stages = self.make_slow_pathway(64, self.fast_res, self.slow_res)
+        self.avg_pool_slow = nn.AvgPool3d((4, 7, 7))
+        self.avg_pool_fast = nn.AvgPool3d((32, 7, 7))
+        self.flat = nn.Flatten()
+        self.fc = nn.Linear(self.slow_res[-1]["channel"][-1] + self.fast_res[-1]["channel"][-1], 51)
 
     @staticmethod
     def make_layer(c_in, cfg):
@@ -139,6 +144,7 @@ class SlowFast(nn.Module):
 
     def forward(self, x):
         # (B,C,N,H,W)
+        x = self.dropout(x)
         slow = self.slow_data(x)
         fast = self.fast_data(x)
 
@@ -153,4 +159,10 @@ class SlowFast(nn.Module):
                 fast_lateral = self.lateral_conv[i](fast_lateral)
                 slow = torch.cat([slow, fast_lateral], dim=1)
 
-        return slow, fast
+        slow = self.flat(self.avg_pool_slow(slow))
+        fast = self.flat(self.avg_pool_fast(fast))
+        x = torch.cat((slow, fast), -1)
+        x = self.dropout(x)
+        x = self.fc(x)
+
+        return x
