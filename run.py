@@ -8,7 +8,7 @@ from dataloader.hmdb51 import build_hmdb51_loader
 from model import *
 from torch.utils import data
 from torchsummary import summary
-from utils.train_utils import accuracy_metric, AvgMeter
+from utils.train_utils import accuracy_metric, AvgMeter, summary_graph
 from torch.utils.tensorboard import SummaryWriter
 
 model_zoo = {"conv3d": Conv3D, "conv2d_lstm": Conv2DLSTM, "slowfast": SlowFast}
@@ -36,7 +36,6 @@ def main():
 
     # net
     net: torch.nn.Module = model_zoo[args.model]()
-    # summary(net, input_size=(3, 32, 112, 112), device="cpu")
     # data
     hmdb51_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=True)
     hmdb51_test: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=False)
@@ -44,6 +43,8 @@ def main():
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
     writer = SummaryWriter(log_dir=log_dir)
+    # tensorboard graph
+    summary_graph((7, 3, 32, 112, 112), net, writer)
 
     if args.resume is not None:
         state_dict = torch.load(args.resume)

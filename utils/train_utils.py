@@ -1,4 +1,5 @@
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 
 def accuracy_metric(logits, target, topk=(1,)):
@@ -35,3 +36,8 @@ class AvgMeter:
     def __str__(self):
         format_str = "{name} {val" + self.fmt + "}+({avg" + self.fmt + "})"
         return format_str.format(**self.__dict__)
+
+
+def summary_graph(dummy_shape: tuple, net: torch.nn.Module, summary_writer: SummaryWriter):
+    x = torch.randn(dummy_shape)
+    summary_writer.add_graph(net, x)
