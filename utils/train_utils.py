@@ -13,7 +13,7 @@ def accuracy_metric(logits, target, topk=(1,)):
         res = []
         for k in topk:
             correct_k = correct[:k].contiguous().view(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
+            res.append(correct_k.mul_(100.0 / batch_size)[0])
         return res
 
 
@@ -26,7 +26,7 @@ class AvgMeter:
 
     def update(self, value, n=1):
         if isinstance(value, torch.Tensor):
-            value = value.cpu().numpy()[0]
+            value = value.cpu().detach().numpy()
         self.val = value
         self.count += n
         self.sum += n * value
