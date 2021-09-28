@@ -1,5 +1,4 @@
-import os.path
-
+import os
 import torch
 import argparse
 import tqdm
@@ -11,27 +10,38 @@ from torchsummary import summary
 from utils.train_utils import accuracy_metric, AvgMeter, summary_graph
 from torch.utils.tensorboard import SummaryWriter
 
-model_zoo = {"conv3d": Conv3D, "conv2d_lstm": Conv2DLSTM, "slowfast": SlowFast}
+model_zoo = {
+    "conv3d": Conv3D,
+    "conv2d_lstm": Conv2DLSTM,
+    "slowfast": SlowFast,
+}
+timestamp = "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
 
 parser = argparse.ArgumentParser(description="Performance test")
 
-parser.add_argument("mod", choices=["train", "eval"])
-parser.add_argument("--batch_size", "--bs", default=4, type=int)
-parser.add_argument("--log", "-l", default=None, type=str, required=True)
-parser.add_argument("--epoch", default=10, type=int)
-parser.add_argument("--lr", default=0.001, type=float)
-parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
-parser.add_argument("--resume", type=str, default=None)
+parser.add_argument("mod", choices=["train", "eval", "summary"])
+# data loader
 parser.add_argument("--fpc", type=int, default=32, help="frame per clip")
 parser.add_argument("-W", "--width", type=int, default=112)
 parser.add_argument("-H", "--height", type=int, default=112)
-parser.add_argument("video", type=str, help="video dataset")
-parser.add_argument("annotation", type=str, help="annotation")
+parser.add_argument("--video", type=str, help="video dataset (root to hmdb51 video file)")
+parser.add_argument("--annotation", type=str, help="annotation (hmdb51 split file)")
+# train
+parser.add_argument("--batch_size", "--bs", default=4, type=int)
+parser.add_argument("--split_train", "--st", default=1, type=int,
+                    help="(for low GPU memory) do optimize after [split_train] train step")
+parser.add_argument("--epoch", default=10, type=int)
+parser.add_argument("--check_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
+parser.add_argument("--lr", default=0.001, type=float)
+# log
+parser.add_argument("--log", "-l", default=None, type=str, required=True,
+                    help="directory to save tensorboard log and checkpoint")
+parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
+parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
 
 
 def main():
     args = parser.parse_args()
-    timestamp = "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
     log_dir = os.path.join(args.log, timestamp)
     ckp_dir = os.path.join(log_dir, "checkpoint")
     os.makedirs(ckp_dir, exist_ok=True)
@@ -41,15 +51,13 @@ def main():
     net: torch.nn.Module = model_zoo[args.model]()
     # data
     hmdb51_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=True,
-                                                        size=(args.width, args.height), frame_per_clip=args.fpc)
+                                                        size=(args.height, args.width), frame_per_clip=args.fpc)
     hmdb51_test: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=False,
-                                                       size=(args.width, args.height), frame_per_clip=args.fpc)
+                                                       size=(args.height, args.width), frame_per_clip=args.fpc)
     # train
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
     writer = SummaryWriter(log_dir=log_dir)
-    # tensorboard graph
-    summary_graph((7, 3, 64, 224, 224), net, writer)
 
     if args.resume is not None:
         state_dict = torch.load(args.resume)
@@ -59,9 +67,14 @@ def main():
     else:
         epoch_start = 0
 
-    if args.mod == "train":
+    if args.mod == "summary":
+        summary(net, (3, args.fpc, args.height, args.width), device="cpu")
+        # tensorboard graph
+        summary_graph((1, 3, args.fpc, args.height, args.width), net, writer)
+    elif args.mod == "train":
         for epoch in range(epoch_start, args.epoch):
-            train(hmdb51_train, net, optimizer, criterion, accuracy_metric, epoch, writer=writer)
+            train(hmdb51_train, net, optimizer, criterion, accuracy_metric, epoch,
+                  writer=writer, split=args.split_train)
 
             if (epoch + 1) % 1 == 0:
                 # save
@@ -82,23 +95,26 @@ def main():
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
-          criterion: torch.nn.Module, acc_metric, epoch, writer=None):
+          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1):
     top1 = AvgMeter("Acc@1", ":4.2f")
     top5 = AvgMeter("Acc@5", ":4.2f")
 
     net.cuda()
     net.train()
+    optimizer.zero_grad()
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Train")
     for step, (video, audio, label) in enumerate(data_loader):
         video = video.cuda()
         label = label.cuda()
 
-        optimizer.zero_grad()
         logits = net(video)
         loss = criterion(logits, label)
         loss.backward()
-        optimizer.step()
+
+        if step % split == 0:
+            optimizer.step()
+            optimizer.zero_grad()
 
         acc1, acc5 = acc_metric(logits, label, topk=(1, 5))
         top1.update(acc1, video.size(0))

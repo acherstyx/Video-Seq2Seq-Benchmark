@@ -144,7 +144,6 @@ class SlowFast(nn.Module):
 
     def forward(self, x):
         # (B,C,N,H,W)
-        x = self.dropout(x)
         slow = self.slow_data(x)
         fast = self.fast_data(x)
 
