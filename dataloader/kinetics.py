@@ -1,13 +1,11 @@
 import os
-
-import torch
 from torch.utils import data
-from torchvision.datasets import HMDB51
-from torchvision.transforms._transforms_video import ToTensorVideo
+from torchvision.datasets import Kinetics400
 from torchvision.transforms import *
+from torchvision.transforms._transforms_video import ToTensorVideo
 
 
-def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=(112, 112), train=True):
+def build_kinetics_loader(video_root, batch_size=1, frame_per_clip=64, size=(224, 224), train=True):
     if train:
         transforms = Compose([
             ToTensorVideo(),
@@ -22,15 +20,16 @@ def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=
             CenterCrop(size)
         ])
 
-    metadata_path = os.path.join(root, "metadata_cache.pt")
+    metadata_path = os.path.join(video_root, "metadata_cache.pt")
     if os.path.exists(metadata_path):
         metadata = torch.load(metadata_path)
     else:
         metadata = None
-    hmdb51 = HMDB51(root, annotation, frame_per_clip, step_between_clips=frame_per_clip,
-                    _precomputed_metadata=metadata, transform=transforms, train=train)
+    kinetics = Kinetics400(video_root, frames_per_clip=frame_per_clip, step_between_clips=frame_per_clip,
+                           extensions=('mp4', 'avi'), transform=transforms,
+                           _precomputed_metadata=metadata, num_workers=64)
     if not os.path.exists(metadata_path):
-        torch.save(hmdb51.metadata, metadata_path)
+        torch.save(kinetics.metadata, metadata_path)
 
-    return data.DataLoader(hmdb51, batch_size,
+    return data.DataLoader(kinetics, batch_size,
                            shuffle=True, num_workers=2, pin_memory=True, prefetch_factor=64)

@@ -3,7 +3,7 @@ import torch
 import argparse
 import tqdm
 from datetime import datetime
-from dataloader.hmdb51 import build_hmdb51_loader
+from dataloader import build_hmdb51_loader, build_kinetics_loader
 from model import *
 from torch.utils import data
 from torchsummary import summary
@@ -15,7 +15,6 @@ model_zoo = {
     "conv2d_lstm": Conv2DLSTM,
     "slowfast": SlowFast,
 }
-timestamp = "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
 
 parser = argparse.ArgumentParser(description="Performance test")
 
@@ -24,8 +23,15 @@ parser.add_argument("mod", choices=["train", "eval", "summary"])
 parser.add_argument("--fpc", type=int, default=32, help="frame per clip")
 parser.add_argument("-W", "--width", type=int, default=112)
 parser.add_argument("-H", "--height", type=int, default=112)
-parser.add_argument("--video", type=str, help="video dataset (root to hmdb51 video file)")
-parser.add_argument("--annotation", type=str, help="annotation (hmdb51 split file)")
+#   dataset
+dataset_parser = parser.add_subparsers(help="chose a dataset to load", title="dataset")
+hmdb_parser = dataset_parser.add_parser("hmdb51")
+hmdb_parser.set_defaults(dataset="hmdb51")
+hmdb_parser.add_argument("--video", type=str, help="hmdb51 video file", required=True)
+hmdb_parser.add_argument("--annotation", type=str, help="hmdb51 split file", required=True)
+kinetics_parser = dataset_parser.add_parser("kinetics")
+kinetics_parser.set_defaults(dataset="kinetics")
+kinetics_parser.add_argument("--video", type=str, help="kinetics dataset video folder", required=True)
 # train
 parser.add_argument("--batch_size", "--bs", default=4, type=int)
 parser.add_argument("--split_train", "--st", default=1, type=int,
@@ -38,10 +44,12 @@ parser.add_argument("--log", "-l", default=None, type=str, required=True,
                     help="directory to save tensorboard log and checkpoint")
 parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
 parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
+parser.add_argument("--timestamp", type=str, default=None, help="naming log folder")
 
 
 def main():
     args = parser.parse_args()
+    timestamp = args.timestamp if args.timestamp is not None else "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
     log_dir = os.path.join(args.log, timestamp)
     ckp_dir = os.path.join(log_dir, "checkpoint")
     os.makedirs(ckp_dir, exist_ok=True)
@@ -50,10 +58,26 @@ def main():
     # net
     net: torch.nn.Module = model_zoo[args.model]()
     # data
-    hmdb51_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=True,
-                                                        size=(args.height, args.width), frame_per_clip=args.fpc)
-    hmdb51_test: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size, train=False,
-                                                       size=(args.height, args.width), frame_per_clip=args.fpc)
+    if args.dataset == "hmdb51":
+        dataloader_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size,
+                                                                train=True,
+                                                                size=(args.height, args.width),
+                                                                frame_per_clip=args.fpc)
+        dataloader_eval: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size,
+                                                               train=False,
+                                                               size=(args.height, args.width),
+                                                               frame_per_clip=args.fpc)
+    elif args.dataset == "kinetics":
+        dataloader_train: data.DataLoader = build_kinetics_loader(os.path.join(args.video, "train"),
+                                                                  args.batch_size,
+                                                                  size=(args.height, args.width),
+                                                                  train=True,
+                                                                  frame_per_clip=args.fpc)
+        dataloader_eval: data.DataLoader = build_kinetics_loader(os.path.join(args.video, "eval"),
+                                                                 args.batch_size,
+                                                                 size=(args.height, args.width),
+                                                                 train=False,
+                                                                 frame_per_clip=args.fpc)
     # train
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
@@ -73,9 +97,9 @@ def main():
         summary_graph((1, 3, args.fpc, args.height, args.width), net, writer)
     elif args.mod == "train":
         for epoch in range(epoch_start, args.epoch):
-            train(hmdb51_train, net, optimizer, criterion, accuracy_metric, epoch,
-                  writer=writer, split=args.split_train)
-
+            train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
+                  writer=writer, split=args.split_trin)
+            a
             if (epoch + 1) % 1 == 0:
                 # save
                 ckp_file = "checkpoint_{}.pt".format(epoch + 1)
@@ -87,11 +111,11 @@ def main():
                 }
                 torch.save(state_dict, ckp_path)
                 # eval
-                loss, top1, top5 = eval(hmdb51_test, net, criterion, accuracy_metric)
+                loss, top1, top5 = eval(dataloader_eval, net, criterion, accuracy_metric)
                 writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
                 writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
     else:
-        eval(hmdb51_train, net, criterion, accuracy_metric)
+        eval(dataloader_train, net, criterion, accuracy_metric)
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
