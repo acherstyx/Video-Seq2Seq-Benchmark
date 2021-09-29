@@ -45,6 +45,9 @@ parser.add_argument("--log", "-l", default=None, type=str, required=True,
 parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
 parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
 parser.add_argument("--timestamp", type=str, default=None, help="naming log folder")
+# lr schedule
+parser.add_argument("--lr_schedule", type=tuple, default=(5, 8), help="decay at epoch")
+parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*decay_rate")
 
 
 def main():
@@ -57,65 +60,87 @@ def main():
 
     # net
     net: torch.nn.Module = model_zoo[args.model]()
-    # data
-    if args.dataset == "hmdb51":
-        dataloader_train: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size,
-                                                                train=True,
-                                                                size=(args.height, args.width),
-                                                                frame_per_clip=args.fpc)
-        dataloader_eval: data.DataLoader = build_hmdb51_loader(args.video, args.annotation, args.batch_size,
-                                                               train=False,
-                                                               size=(args.height, args.width),
-                                                               frame_per_clip=args.fpc)
-    elif args.dataset == "kinetics":
-        dataloader_train: data.DataLoader = build_kinetics_loader(os.path.join(args.video, "train"),
-                                                                  args.batch_size,
-                                                                  size=(args.height, args.width),
-                                                                  train=True,
-                                                                  frame_per_clip=args.fpc)
-        dataloader_eval: data.DataLoader = build_kinetics_loader(os.path.join(args.video, "eval"),
-                                                                 args.batch_size,
-                                                                 size=(args.height, args.width),
-                                                                 train=False,
-                                                                 frame_per_clip=args.fpc)
     # train
-    optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
-    criterion = torch.nn.CrossEntropyLoss()
     writer = SummaryWriter(log_dir=log_dir)
-
-    if args.resume is not None:
-        state_dict = torch.load(args.resume)
-        epoch_start = state_dict["epoch"]
-        assert state_dict["arch"] == args.model, "The model architecture is not match"
-        net.load_state_dict(state_dict["model_param"])
-    else:
-        epoch_start = 0
+    criterion = torch.nn.CrossEntropyLoss()
 
     if args.mod == "summary":
         summary(net, (3, args.fpc, args.height, args.width), device="cpu")
         # tensorboard graph
         summary_graph((1, 3, args.fpc, args.height, args.width), net, writer)
-    elif args.mod == "train":
-        for epoch in range(epoch_start, args.epoch):
-            train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
-                  writer=writer, split=args.split_trin)
-            a
-            if (epoch + 1) % 1 == 0:
-                # save
-                ckp_file = "checkpoint_{}.pt".format(epoch + 1)
-                ckp_path = os.path.join(ckp_dir, ckp_file)
-                state_dict = {
-                    "epoch": epoch + 1,
-                    "arch": args.model,
-                    "model_param": net.state_dict()
-                }
-                torch.save(state_dict, ckp_path)
-                # eval
-                loss, top1, top5 = eval(dataloader_eval, net, criterion, accuracy_metric)
-                writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
-                writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
     else:
-        eval(dataloader_train, net, criterion, accuracy_metric)
+        # optimizer
+        optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+
+        if args.resume is not None:
+            state_dict = torch.load(args.resume)
+            epoch_start = state_dict["epoch"]
+            assert state_dict["arch"] == args.model, "The model architecture is not match"
+            net.load_state_dict(state_dict["model_param"])
+            optimizer.load_state_dict(state_dict["optimizer"])
+            scheduler.load_state_dict(state_dict["scheduler"])
+        else:
+            epoch_start = 0
+
+        # load train, eval and test data
+        if args.dataset == "hmdb51":
+            dataloader_train = build_hmdb51_loader(args.video, args.annotation, args.batch_size,
+                                                   train=True,
+                                                   size=(args.height, args.width),
+                                                   frame_per_clip=args.fpc)
+            dataloader_test = dataloader_val = build_hmdb51_loader(args.video, args.annotation,
+                                                                   args.batch_size,
+                                                                   train=False,
+                                                                   size=(args.height, args.width),
+                                                                   frame_per_clip=args.fpc)
+        elif args.dataset == "kinetics":
+            dataloader_train = build_kinetics_loader(os.path.join(args.video, "train"),
+                                                     args.batch_size,
+                                                     size=(args.height, args.width),
+                                                     train=True,
+                                                     frame_per_clip=args.fpc)
+            dataloader_val = build_kinetics_loader(os.path.join(args.video, "val"),
+                                                   args.batch_size,
+                                                   size=(args.height, args.width),
+                                                   train=False,
+                                                   frame_per_clip=args.fpc)
+            dataloader_test = build_kinetics_loader(os.path.join(args.video, "test"),
+                                                    args.batch_size,
+                                                    size=(args.height, args.width),
+                                                    train=False,
+                                                    frame_per_clip=args.fpc)
+        else:
+            raise ValueError
+        dataloader_train: data.DataLoader
+        dataloader_val: data.DataLoader
+        dataloader_test: data.DataLoader
+
+        if args.mod == "train":
+
+            for epoch in range(epoch_start, args.epoch):
+                train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
+                      writer=writer, split=args.split_trin)
+
+                if (epoch + 1) % 1 == 0:
+                    # save
+                    ckp_file = "checkpoint_{}.pt".format(epoch + 1)
+                    ckp_path = os.path.join(ckp_dir, ckp_file)
+                    state_dict = {
+                        "epoch": epoch + 1,
+                        "arch": args.model,
+                        "model_param": net.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict()
+                    }
+                    torch.save(state_dict, ckp_path)
+                    # eval
+                    loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
+                    writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
+                    writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
+        else:
+            eval(dataloader_test, net, criterion, accuracy_metric)
+    writer.close()
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,

@@ -25,9 +25,12 @@ def build_kinetics_loader(video_root, batch_size=1, frame_per_clip=64, size=(224
         metadata = torch.load(metadata_path)
     else:
         metadata = None
-    kinetics = Kinetics400(video_root, frames_per_clip=frame_per_clip, step_between_clips=frame_per_clip,
-                           extensions=('mp4', 'avi'), transform=transforms,
-                           _precomputed_metadata=metadata, num_workers=64)
+    kinetics = Kinetics400(
+        video_root, frames_per_clip=frame_per_clip, step_between_clips=frame_per_clip,
+        extensions=('mp4', 'avi'), transform=transforms,
+        _precomputed_metadata=metadata,
+        num_workers=os.cpu_count()  # for loading video metadata
+    )
     if not os.path.exists(metadata_path):
         torch.save(kinetics.metadata, metadata_path)
 

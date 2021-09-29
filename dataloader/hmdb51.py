@@ -28,7 +28,9 @@ def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=
     else:
         metadata = None
     hmdb51 = HMDB51(root, annotation, frame_per_clip, step_between_clips=frame_per_clip,
-                    _precomputed_metadata=metadata, transform=transforms, train=train)
+                    _precomputed_metadata=metadata, transform=transforms, train=train,
+                    num_workers=os.cpu_count()
+                    )
     if not os.path.exists(metadata_path):
         torch.save(hmdb51.metadata, metadata_path)
 

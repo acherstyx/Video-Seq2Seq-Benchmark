@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ResBlock3d(nn.Module):
@@ -99,8 +100,6 @@ class SlowFast(nn.Module):
         self.relu = nn.ReLU()
         self.fast_pathway_stages = self.make_fast_pathway(8, self.fast_res)
         self.lateral_conv, self.slow_pathway_stages = self.make_slow_pathway(64, self.fast_res, self.slow_res)
-        self.avg_pool_slow = nn.AvgPool3d((4, 7, 7))
-        self.avg_pool_fast = nn.AvgPool3d((32, 7, 7))
         self.flat = nn.Flatten()
         self.fc = nn.Linear(self.slow_res[-1]["channel"][-1] + self.fast_res[-1]["channel"][-1], 51)
 
@@ -158,10 +157,13 @@ class SlowFast(nn.Module):
                 fast_lateral = self.lateral_conv[i](fast_lateral)
                 slow = torch.cat([slow, fast_lateral], dim=1)
 
-        slow = self.flat(self.avg_pool_slow(slow))
-        fast = self.flat(self.avg_pool_fast(fast))
+        slow = self.flat(F.avg_pool3d(slow, slow.shape[-3:]))   # global average pooling
+        fast = self.flat(F.avg_pool3d(fast, fast.shape[-3:]))
         x = torch.cat((slow, fast), -1)
         x = self.dropout(x)
         x = self.fc(x)
 
-        return x
+        if self.training:
+            return x
+        else:
+            return F.softmax(x, dim=-1)
