@@ -5,12 +5,16 @@ from torch.utils import data
 from torchvision.datasets import HMDB51
 from torchvision.transforms._transforms_video import ToTensorVideo
 from torchvision.transforms import *
+import warnings
+
+warnings.simplefilter("ignore", UserWarning)
 
 
 def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=(112, 112), train=True):
     if train:
         transforms = Compose([
             ToTensorVideo(),
+            Resize(max(*size)),
             CenterCrop(size),
             # ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2, hue=0.3),
             GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5)),
@@ -35,4 +39,4 @@ def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=
         torch.save(hmdb51.metadata, metadata_path)
 
     return data.DataLoader(hmdb51, batch_size,
-                           shuffle=True, num_workers=2, pin_memory=True, prefetch_factor=64)
+                           shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=64)

@@ -1,0 +1,8 @@
+torch
+einops~=0.3.2
+torchsummary~=1.5.1
+torchvision
+tqdm
+av
+numpy
+tensorboard

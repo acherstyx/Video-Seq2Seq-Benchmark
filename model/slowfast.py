@@ -53,7 +53,7 @@ class ResBlock3d(nn.Module):
 
 class SlowFast(nn.Module):
 
-    def __init__(self):
+    def __init__(self, num_classes):
         super(SlowFast, self).__init__()
         self.dropout = nn.Dropout3d()
         self.slow_data = nn.Sequential(nn.Conv3d(3, 3, (1, 1, 1), stride=(16, 1, 1)),
@@ -101,7 +101,7 @@ class SlowFast(nn.Module):
         self.fast_pathway_stages = self.make_fast_pathway(8, self.fast_res)
         self.lateral_conv, self.slow_pathway_stages = self.make_slow_pathway(64, self.fast_res, self.slow_res)
         self.flat = nn.Flatten()
-        self.fc = nn.Linear(self.slow_res[-1]["channel"][-1] + self.fast_res[-1]["channel"][-1], 51)
+        self.fc = nn.Linear(self.slow_res[-1]["channel"][-1] + self.fast_res[-1]["channel"][-1], num_classes)
 
     @staticmethod
     def make_layer(c_in, cfg):
@@ -157,7 +157,7 @@ class SlowFast(nn.Module):
                 fast_lateral = self.lateral_conv[i](fast_lateral)
                 slow = torch.cat([slow, fast_lateral], dim=1)
 
-        slow = self.flat(F.avg_pool3d(slow, slow.shape[-3:]))   # global average pooling
+        slow = self.flat(F.avg_pool3d(slow, slow.shape[-3:]))  # global average pooling
         fast = self.flat(F.avg_pool3d(fast, fast.shape[-3:]))
         x = torch.cat((slow, fast), -1)
         x = self.dropout(x)

@@ -14,6 +14,7 @@ model_zoo = {
     "conv3d": Conv3D,
     "conv2d_lstm": Conv2DLSTM,
     "slowfast": SlowFast,
+    "vivit": ViViT
 }
 
 parser = argparse.ArgumentParser(description="Performance test")
@@ -44,7 +45,7 @@ parser.add_argument("--log", "-l", default=None, type=str, required=True,
                     help="directory to save tensorboard log and checkpoint")
 parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
 parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
-parser.add_argument("--timestamp", type=str, default=None, help="naming log folder")
+parser.add_argument("--name", type=str, default=None, help="naming log folder")
 # lr schedule
 parser.add_argument("--lr_schedule", type=tuple, default=(5, 8), help="decay at epoch")
 parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*decay_rate")
@@ -52,26 +53,33 @@ parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*deca
 
 def main():
     args = parser.parse_args()
-    timestamp = args.timestamp if args.timestamp is not None else "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
+    timestamp = "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
+    timestamp = os.path.join(args.name, timestamp) if args.name is not None else timestamp
     log_dir = os.path.join(args.log, timestamp)
     ckp_dir = os.path.join(log_dir, "checkpoint")
     os.makedirs(ckp_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
     # net
-    net: torch.nn.Module = model_zoo[args.model]()
+    if args.dataset == "hmdb51":
+        net: torch.nn.Module = model_zoo[args.model](num_classes=51)
+    elif args.dataset == "kinetics":
+        net: torch.nn.Module = model_zoo[args.model](num_classes=400)
+    else:
+        raise ValueError
     # train
     writer = SummaryWriter(log_dir=log_dir)
     criterion = torch.nn.CrossEntropyLoss()
 
     if args.mod == "summary":
+        print((3, args.fpc, args.height, args.width))
         summary(net, (3, args.fpc, args.height, args.width), device="cpu")
         # tensorboard graph
         summary_graph((1, 3, args.fpc, args.height, args.width), net, writer)
     else:
         # optimizer
         optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_decay_rate)
 
         if args.resume is not None:
             state_dict = torch.load(args.resume)
@@ -119,8 +127,14 @@ def main():
         if args.mod == "train":
 
             for epoch in range(epoch_start, args.epoch):
+                print("Epoch {}/{}:".format(epoch, args.epoch))
+                if (epoch + 1) in args.lr_schedule:
+                    optimizer.zero_grad()
+                    optimizer.step()
+                    scheduler.step()
+
                 train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
-                      writer=writer, split=args.split_trin)
+                      writer=writer, split=args.split_train)
 
                 if (epoch + 1) % 1 == 0:
                     # save
@@ -154,6 +168,7 @@ def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.o
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Train")
     for step, (video, audio, label) in enumerate(data_loader):
+
         video = video.cuda()
         label = label.cuda()
 
