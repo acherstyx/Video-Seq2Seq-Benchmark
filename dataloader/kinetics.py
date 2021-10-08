@@ -22,7 +22,7 @@ class Kinetics400Warp(data.Dataset):
         return video, 0, label
 
 
-def build_kinetics_loader(video_root, batch_size=1, frame_per_clip=64, size=(224, 224), train=True):
+def build_kinetics_loader(video_root, num_workers, batch_size=1, frame_per_clip=64, size=(224, 224), train=True):
     if train:
         transforms = Compose([
             ToTensorVideo(),
@@ -31,7 +31,7 @@ def build_kinetics_loader(video_root, batch_size=1, frame_per_clip=64, size=(224
     else:
         transforms = Compose([
             ToTensorVideo(),
-            CenterCrop(size)
+            CenterCrop(size),
         ])
 
     metadata_path = os.path.join(video_root, "metadata_cache.pt")
@@ -50,5 +50,5 @@ def build_kinetics_loader(video_root, batch_size=1, frame_per_clip=64, size=(224
         torch.save(kinetics.metadata, metadata_path)
 
     return data.DataLoader(kinetics, batch_size,
-                           shuffle=True, num_workers=56, pin_memory=True, prefetch_factor=1024,
+                           shuffle=True, num_workers=num_workers, pin_memory=True, prefetch_factor=2,
                            multiprocessing_context="fork")

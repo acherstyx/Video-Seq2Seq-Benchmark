@@ -2,6 +2,7 @@ import os
 import torch
 import argparse
 import tqdm
+import logging
 from datetime import datetime
 from dataloader import build_hmdb51_loader, build_kinetics_loader
 from model import *
@@ -17,14 +18,19 @@ model_zoo = {
     "vivit": ViViT
 }
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 parser = argparse.ArgumentParser(description="Performance test")
 
 parser.add_argument("mod", choices=["train", "eval", "summary"])
 # data loader
-parser.add_argument("--fpc", type=int, default=32, help="frame per clip")
+parser.add_argument("--fpc", type=int, default=64, help="frame per clip")
 parser.add_argument("-W", "--width", type=int, default=112)
 parser.add_argument("-H", "--height", type=int, default=112)
+parser.add_argument("--skip", type=int, default=2,
+                    help="drop some frame in the clip (default=2, 64fpc->32fpc)")
 #   dataset
+parser.add_argument("--workers", default=2, type=int, help="dataloader num_worker")
 dataset_parser = parser.add_subparsers(help="chose a dataset to load", title="dataset")
 hmdb_parser = dataset_parser.add_parser("hmdb51")
 hmdb_parser.set_defaults(dataset="hmdb51")
@@ -61,6 +67,7 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
 
     # net
+    logger.info("building model: %s", args.model)
     if args.dataset == "hmdb51":
         net: torch.nn.Module = model_zoo[args.model](num_classes=51)
     elif args.dataset == "kinetics":
@@ -82,6 +89,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_decay_rate)
 
         if args.resume is not None:
+            logger.info("resume from checkpoint... %s", args.resume)
             state_dict = torch.load(args.resume)
             epoch_start = state_dict["epoch"]
             assert state_dict["arch"] == args.model, "The model architecture is not match"
@@ -92,29 +100,36 @@ def main():
             epoch_start = 0
 
         # load train, eval and test data
+        logger.info("creating data loader...")
         if args.dataset == "hmdb51":
-            dataloader_train = build_hmdb51_loader(args.video, args.annotation, args.batch_size,
+            dataloader_train = build_hmdb51_loader(args.video, args.annotation,
+                                                   num_workers=args.workers,
+                                                   batch_size=args.batch_size,
                                                    train=True,
                                                    size=(args.height, args.width),
                                                    frame_per_clip=args.fpc)
             dataloader_test = dataloader_val = build_hmdb51_loader(args.video, args.annotation,
-                                                                   args.batch_size,
+                                                                   num_workers=args.workers,
+                                                                   batch_size=args.batch_size,
                                                                    train=False,
                                                                    size=(args.height, args.width),
                                                                    frame_per_clip=args.fpc)
         elif args.dataset == "kinetics":
             dataloader_train = build_kinetics_loader(os.path.join(args.video, "train"),
-                                                     args.batch_size,
+                                                     num_workers=args.workers,
+                                                     batch_size=args.batch_size,
                                                      size=(args.height, args.width),
                                                      train=True,
                                                      frame_per_clip=args.fpc)
             dataloader_val = build_kinetics_loader(os.path.join(args.video, "val"),
-                                                   args.batch_size,
+                                                   num_workers=args.workers,
+                                                   batch_size=args.batch_size,
                                                    size=(args.height, args.width),
                                                    train=False,
                                                    frame_per_clip=args.fpc)
             dataloader_test = build_kinetics_loader(os.path.join(args.video, "test"),
-                                                    args.batch_size,
+                                                    num_workers=args.workers,
+                                                    batch_size=args.batch_size,
                                                     size=(args.height, args.width),
                                                     train=False,
                                                     frame_per_clip=args.fpc)
@@ -124,21 +139,21 @@ def main():
         dataloader_val: data.DataLoader
         dataloader_test: data.DataLoader
 
+        logger.info("Training...")
         if args.mod == "train":
-
             for epoch in range(epoch_start, args.epoch):
-                print("Epoch {}/{}:".format(epoch, args.epoch))
+                logger.info("train epoch {}/{}:".format(epoch, args.epoch))
                 if (epoch + 1) in args.lr_schedule:
                     optimizer.zero_grad()
                     optimizer.step()
                     scheduler.step()
 
-                train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
-                      writer=writer, split=args.split_train)
-
-                if (epoch + 1) % 1 == 0:
-                    # save
-                    ckp_file = "checkpoint_{}.pt".format(epoch + 1)
+                try:
+                    train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
+                          writer=writer, split=args.split_train, skip_frame_strides=args.skip)
+                except Exception:
+                    # error exit save
+                    ckp_file = "checkpoint_error_exit_epoch_{}.pt".format(epoch + 1)
                     ckp_path = os.path.join(ckp_dir, ckp_file)
                     state_dict = {
                         "epoch": epoch + 1,
@@ -148,7 +163,23 @@ def main():
                         "scheduler": scheduler.state_dict()
                     }
                     torch.save(state_dict, ckp_path)
+                    exit(-1)
+
+                if (epoch + 1) % 1 == 0:
+                    # save
+                    ckp_file = "checkpoint_%s.pt".format(epoch + 1)
+                    ckp_path = os.path.join(ckp_dir, ckp_file)
+                    state_dict = {
+                        "epoch": epoch + 1,
+                        "arch": args.model,
+                        "model_param": net.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict()
+                    }
+                    torch.save(state_dict, ckp_path)
+                    logger.info("Checkpoint is saved to %s", ckp_path)
                     # eval
+                    logger.info("evaluating...")
                     loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
                     writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
                     writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
@@ -158,7 +189,7 @@ def main():
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
-          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1):
+          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1, skip_frame_strides=2):
     top1 = AvgMeter("Acc@1", ":4.2f")
     top5 = AvgMeter("Acc@5", ":4.2f")
 
@@ -168,8 +199,7 @@ def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.o
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Train")
     for step, (video, audio, label) in enumerate(data_loader):
-
-        video = video.cuda()
+        video = video.cuda()[:, :, ::skip_frame_strides, :, :]
         label = label.cuda()
 
         logits = net(video)
@@ -201,8 +231,8 @@ def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metr
     data_loader.set_description("Eval")
     with torch.no_grad():
         for step, (video, audio, label) in enumerate(data_loader):
-            video = video.cuda()
-            label = label.cuda()
+            video = video.cuda(non_blocking=True)
+            label = label.cuda(non_blocking=True)
 
             logits = net(video)
 

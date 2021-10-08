@@ -10,7 +10,7 @@ import warnings
 warnings.simplefilter("ignore", UserWarning)
 
 
-def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=(112, 112), train=True):
+def build_hmdb51_loader(root, annotation, num_workers, batch_size=1, frame_per_clip=32, size=(112, 112), train=True):
     if train:
         transforms = Compose([
             ToTensorVideo(),
@@ -39,4 +39,4 @@ def build_hmdb51_loader(root, annotation, batch_size=1, frame_per_clip=32, size=
         torch.save(hmdb51.metadata, metadata_path)
 
     return data.DataLoader(hmdb51, batch_size,
-                           shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=64)
+                           shuffle=True, num_workers=num_workers, pin_memory=True, prefetch_factor=1)
