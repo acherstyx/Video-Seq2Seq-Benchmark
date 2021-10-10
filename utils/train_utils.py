@@ -1,3 +1,5 @@
+import time
+
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -41,3 +43,56 @@ class AvgMeter:
 def summary_graph(dummy_shape: tuple, net: torch.nn.Module, summary_writer: SummaryWriter):
     x = torch.randn(dummy_shape)
     summary_writer.add_graph(net, x)
+
+
+class Timer:
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        self.start = time.time()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        print("Timer {}: {} s".format(self.name, time.time() - self.start))
+
+
+class ResetTimer:
+    def __init__(self):
+        self.time = time.time()
+
+    def __call__(self, reset=True):
+        pre = self.time
+        if reset:
+            after = self.time = time.time()
+        else:
+            after = time.time()
+        return int((after - pre) * 1000)
+
+
+class PreFetcher:
+    def __init__(self, data_loader, device):
+        self.loader = iter(data_loader)
+        self.stream = torch.cuda.Stream()
+        self.device = device
+        self.batch = None
+        self.preload()
+
+    def preload(self):
+        try:
+            self.batch = next(self.loader)
+        except StopIteration:
+            self.batch = None
+            return
+        with torch.cuda.stream(self.stream):
+            self.batch = [sample.to(self.device, non_blocking=True) for sample in self.batch]
+
+    def __next__(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        batch = self.batch
+        if batch is None:
+            raise StopIteration
+        self.preload()
+        return batch
+
+    def __iter__(self):
+        return self

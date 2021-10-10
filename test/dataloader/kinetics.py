@@ -22,7 +22,16 @@ class TestKinetics(unittest.TestCase):
             print("=====")
 
     def test_speed(self):
-        k400 = build_kinetics_loader("/mnt/workshop/kinetics400/train", 128, 2, 64)
+        def collate_fn(batch):
+            return [
+                torch.cat(
+                    [batch[i][0][:, ::2, :, :].unsqueeze(0) for i in range(len(batch))], 0
+                ),
+                torch.LongTensor([batch[i][2] for i in range(len(batch))]),
+            ]
+
+        k400 = build_kinetics_loader("/mnt/workshop/kinetics400/train", os.cpu_count() * 2, 2, 64,
+                                     collate_fn=collate_fn)
         import tqdm
-        for v, a, l in tqdm.tqdm(k400):
+        for v, l in tqdm.tqdm(k400):
             pass

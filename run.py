@@ -8,7 +8,7 @@ from dataloader import build_hmdb51_loader, build_kinetics_loader
 from model import *
 from torch.utils import data
 from torchsummary import summary
-from utils.train_utils import accuracy_metric, AvgMeter, summary_graph
+from utils.train_utils import accuracy_metric, AvgMeter, summary_graph, ResetTimer, PreFetcher
 from torch.utils.tensorboard import SummaryWriter
 
 model_zoo = {
@@ -30,7 +30,7 @@ parser.add_argument("-H", "--height", type=int, default=112)
 parser.add_argument("--skip", type=int, default=2,
                     help="drop some frame in the clip (default=2, 64fpc->32fpc)")
 #   dataset
-parser.add_argument("--workers", default=2, type=int, help="dataloader num_worker")
+parser.add_argument("--workers", default=os.cpu_count(), type=int, help="dataloader num_worker")
 dataset_parser = parser.add_subparsers(help="chose a dataset to load", title="dataset")
 hmdb_parser = dataset_parser.add_parser("hmdb51")
 hmdb_parser.set_defaults(dataset="hmdb51")
@@ -44,7 +44,7 @@ parser.add_argument("--batch_size", "--bs", default=4, type=int)
 parser.add_argument("--split_train", "--st", default=1, type=int,
                     help="(for low GPU memory) do optimize after [split_train] train step")
 parser.add_argument("--epoch", default=10, type=int)
-parser.add_argument("--check_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
+parser.add_argument("--eval_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
 parser.add_argument("--lr", default=0.001, type=float)
 # log
 parser.add_argument("--log", "-l", default=None, type=str, required=True,
@@ -53,7 +53,7 @@ parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items(
 parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
 parser.add_argument("--name", type=str, default=None, help="naming log folder")
 # lr schedule
-parser.add_argument("--lr_schedule", type=tuple, default=(5, 8), help="decay at epoch")
+parser.add_argument("--lr_schedule", type=tuple, default=None, help="decay at epoch")
 parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*decay_rate")
 
 
@@ -74,8 +74,10 @@ def main():
         net: torch.nn.Module = model_zoo[args.model](num_classes=400)
     else:
         raise ValueError
+    net.cuda()
     # train
     writer = SummaryWriter(log_dir=log_dir)
+    writer.add_text("param", str(args.__dict__), global_step=0)
     criterion = torch.nn.CrossEntropyLoss()
 
     if args.mod == "summary":
@@ -101,16 +103,19 @@ def main():
 
         # load train, eval and test data
         logger.info("creating data loader...")
+
         if args.dataset == "hmdb51":
             dataloader_train = build_hmdb51_loader(args.video, args.annotation,
                                                    num_workers=args.workers,
                                                    batch_size=args.batch_size,
+                                                   skip=args.skip,
                                                    train=True,
                                                    size=(args.height, args.width),
                                                    frame_per_clip=args.fpc)
             dataloader_test = dataloader_val = build_hmdb51_loader(args.video, args.annotation,
                                                                    num_workers=args.workers,
                                                                    batch_size=args.batch_size,
+                                                                   skip=args.skip,
                                                                    train=False,
                                                                    size=(args.height, args.width),
                                                                    frame_per_clip=args.fpc)
@@ -118,18 +123,21 @@ def main():
             dataloader_train = build_kinetics_loader(os.path.join(args.video, "train"),
                                                      num_workers=args.workers,
                                                      batch_size=args.batch_size,
+                                                     skip=args.skip,
                                                      size=(args.height, args.width),
                                                      train=True,
                                                      frame_per_clip=args.fpc)
             dataloader_val = build_kinetics_loader(os.path.join(args.video, "val"),
                                                    num_workers=args.workers,
                                                    batch_size=args.batch_size,
+                                                   skip=args.skip,
                                                    size=(args.height, args.width),
                                                    train=False,
                                                    frame_per_clip=args.fpc)
             dataloader_test = build_kinetics_loader(os.path.join(args.video, "test"),
                                                     num_workers=args.workers,
                                                     batch_size=args.batch_size,
+                                                    skip=args.skip,
                                                     size=(args.height, args.width),
                                                     train=False,
                                                     frame_per_clip=args.fpc)
@@ -143,15 +151,14 @@ def main():
         if args.mod == "train":
             for epoch in range(epoch_start, args.epoch):
                 logger.info("train epoch {}/{}:".format(epoch, args.epoch))
-                if (epoch + 1) in args.lr_schedule:
+                if args.lr_schedule is not None and (epoch + 1) in args.lr_schedule:
                     optimizer.zero_grad()
                     optimizer.step()
                     scheduler.step()
-
                 try:
                     train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
-                          writer=writer, split=args.split_train, skip_frame_strides=args.skip)
-                except Exception:
+                          writer=writer, split=args.split_train)
+                except Exception as e:
                     # error exit save
                     ckp_file = "checkpoint_error_exit_epoch_{}.pt".format(epoch + 1)
                     ckp_path = os.path.join(ckp_dir, ckp_file)
@@ -163,9 +170,11 @@ def main():
                         "scheduler": scheduler.state_dict()
                     }
                     torch.save(state_dict, ckp_path)
-                    exit(-1)
+                    logger.critical("Catch exception, checkpoint is saved to %s", ckp_path)
+                    logger.critical("Exiting...")
+                    raise e
 
-                if (epoch + 1) % 1 == 0:
+                if (epoch + 1) % args.check_freq == 0:
                     # save
                     ckp_file = "checkpoint_%s.pt".format(epoch + 1)
                     ckp_path = os.path.join(ckp_dir, ckp_file)
@@ -189,35 +198,37 @@ def main():
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
-          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1, skip_frame_strides=2):
-    top1 = AvgMeter("Acc@1", ":4.2f")
-    top5 = AvgMeter("Acc@5", ":4.2f")
-
+          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1):
     net.cuda()
     net.train()
     optimizer.zero_grad()
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Train")
-    for step, (video, audio, label) in enumerate(data_loader):
-        video = video.cuda()[:, :, ::skip_frame_strides, :, :]
-        label = label.cuda()
+    timer = ResetTimer()
+    time_log = {}
+    for step, (video, label) in enumerate(PreFetcher(data_loader, device="cuda:0")):
+        time_log["load_data"] = timer()
 
         logits = net(video)
         loss = criterion(logits, label)
+        time_log["forward"] = timer()
         loss.backward()
+        time_log["backward"] = timer()
 
         if step % split == 0:
             optimizer.step()
             optimizer.zero_grad()
+        time_log["optimize"] = timer()
 
         acc1, acc5 = acc_metric(logits, label, topk=(1, 5))
-        top1.update(acc1, video.size(0))
-        top5.update(acc5, video.size(0))
+        time_log["acc"] = timer()
 
         if writer is not None:
             total_step = step + epoch * len(data_loader)
-            writer.add_scalars("train/acc", {"top1": top1.val, "top5": top5.val}, total_step)
+            writer.add_scalars("train/acc", {"top1": acc1, "top5": acc5}, total_step)
             writer.add_scalar("train/loss", loss, total_step)
+            writer.add_scalars("train/time", time_log, total_step, )
+            time_log["summary"] = timer()
 
 
 def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metric):
@@ -230,7 +241,7 @@ def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metr
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Eval")
     with torch.no_grad():
-        for step, (video, audio, label) in enumerate(data_loader):
+        for step, (video, label) in enumerate(data_loader):
             video = video.cuda(non_blocking=True)
             label = label.cuda(non_blocking=True)
 

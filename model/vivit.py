@@ -7,7 +7,7 @@ import torch.nn.functional as F
 class ViViT(nn.Module):
     def __init__(self, num_classes,
                  size=(224, 224), frame_per_clip=32,
-                 t=2, h=16, w=16, n_head=12, n_layer=12, patch_dim=768, d_feature=3072):
+                 t=2, h=16, w=16, n_head=12, n_layer=12, patch_dim=512, d_feature=2048):
         super(ViViT, self).__init__()
 
         self.t = t
