@@ -66,7 +66,7 @@ class ResetTimer:
             after = self.time = time.time()
         else:
             after = time.time()
-        return int((after - pre) * 1000)
+        return (after - pre) * 1000
 
 
 class PreFetcher:

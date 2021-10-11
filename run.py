@@ -3,6 +3,7 @@ import torch
 import argparse
 import tqdm
 import logging
+from collections import OrderedDict
 from datetime import datetime
 from dataloader import build_hmdb51_loader, build_kinetics_loader
 from model import *
@@ -46,6 +47,7 @@ parser.add_argument("--split_train", "--st", default=1, type=int,
 parser.add_argument("--epoch", default=10, type=int)
 parser.add_argument("--eval_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
 parser.add_argument("--lr", default=0.001, type=float)
+parser.add_argument("--fine_tune", default=False, action="store_true", help="use fine tune mode")
 # log
 parser.add_argument("--log", "-l", default=None, type=str, required=True,
                     help="directory to save tensorboard log and checkpoint")
@@ -60,11 +62,14 @@ parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*deca
 def main():
     args = parser.parse_args()
     timestamp = "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
+    if args.name is None:
+        args.name = input("experiment name: ")
     timestamp = os.path.join(args.name, timestamp) if args.name is not None else timestamp
     log_dir = os.path.join(args.log, timestamp)
     ckp_dir = os.path.join(log_dir, "checkpoint")
     os.makedirs(ckp_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
+    logger.info("log dir: %s", log_dir)
 
     # net
     logger.info("building model: %s", args.model)
@@ -90,14 +95,27 @@ def main():
         optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_decay_rate)
 
-        if args.resume is not None:
+        if args.resume is not None and not args.fine_tune:
             logger.info("resume from checkpoint... %s", args.resume)
             state_dict = torch.load(args.resume)
-            epoch_start = state_dict["epoch"]
             assert state_dict["arch"] == args.model, "The model architecture is not match"
-            net.load_state_dict(state_dict["model_param"])
+            epoch_start = state_dict["epoch"]
             optimizer.load_state_dict(state_dict["optimizer"])
             scheduler.load_state_dict(state_dict["scheduler"])
+            net.load_state_dict(state_dict["model_param"])
+        elif args.resume is not None and args.fine_tune:
+            logger.info("resume from checkpoint... %s", args.resume)
+            state_dict = torch.load(args.resume)
+            assert state_dict["arch"] == args.model, "The model architecture is not match"
+            epoch_start = 0
+            # match model parameters
+            net_dict = net.state_dict()
+            logger.info("fine %s layers", len(state_dict["model_param"].items()))
+            state_dict["model_param"] = {k: v for k, v in state_dict["model_param"].items() if
+                                         (k in net_dict and net_dict[k].shape == v.shape)}
+            logger.info("resume %s layers from checkpoint", len(state_dict["model_param"].items()))
+            net_dict.update(state_dict["model_param"])
+            net.load_state_dict(OrderedDict(net_dict))
         else:
             epoch_start = 0
 
@@ -147,17 +165,38 @@ def main():
         dataloader_val: data.DataLoader
         dataloader_test: data.DataLoader
 
-        logger.info("Training...")
         if args.mod == "train":
+            logger.info("Training...")
             for epoch in range(epoch_start, args.epoch):
-                logger.info("train epoch {}/{}:".format(epoch, args.epoch))
-                if args.lr_schedule is not None and (epoch + 1) in args.lr_schedule:
-                    optimizer.zero_grad()
-                    optimizer.step()
-                    scheduler.step()
                 try:
+                    logger.info("train epoch {}/{}:".format(epoch + 1, args.epoch))
+
                     train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
                           writer=writer, split=args.split_train)
+
+                    if args.lr_schedule is not None and (epoch + 1) in args.lr_schedule:
+                        optimizer.zero_grad()
+                        optimizer.step()
+                        scheduler.step()
+
+                    if (epoch + 1) % args.eval_freq == 0:
+                        # save
+                        ckp_file = "checkpoint_{}.pt".format(epoch + 1)
+                        ckp_path = os.path.join(ckp_dir, ckp_file)
+                        state_dict = {
+                            "epoch": epoch + 1,
+                            "arch": args.model,
+                            "model_param": net.state_dict(),
+                            "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict()
+                        }
+                        torch.save(state_dict, ckp_path)
+                        logger.info("Checkpoint is saved to %s", ckp_path)
+                        # eval
+                        logger.info("evaluating...")
+                        loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
+                        writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
+                        writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
                 except Exception as e:
                     # error exit save
                     ckp_file = "checkpoint_error_exit_epoch_{}.pt".format(epoch + 1)
@@ -173,25 +212,6 @@ def main():
                     logger.critical("Catch exception, checkpoint is saved to %s", ckp_path)
                     logger.critical("Exiting...")
                     raise e
-
-                if (epoch + 1) % args.check_freq == 0:
-                    # save
-                    ckp_file = "checkpoint_%s.pt".format(epoch + 1)
-                    ckp_path = os.path.join(ckp_dir, ckp_file)
-                    state_dict = {
-                        "epoch": epoch + 1,
-                        "arch": args.model,
-                        "model_param": net.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict()
-                    }
-                    torch.save(state_dict, ckp_path)
-                    logger.info("Checkpoint is saved to %s", ckp_path)
-                    # eval
-                    logger.info("evaluating...")
-                    loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
-                    writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
-                    writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
         else:
             eval(dataloader_test, net, criterion, accuracy_metric)
     writer.close()
@@ -228,6 +248,7 @@ def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.o
             writer.add_scalars("train/acc", {"top1": acc1, "top5": acc5}, total_step)
             writer.add_scalar("train/loss", loss, total_step)
             writer.add_scalars("train/time", time_log, total_step, )
+            writer.add_scalar("train/lr", optimizer.state_dict()['param_groups'][0]['lr'], total_step)
             time_log["summary"] = timer()
 
 

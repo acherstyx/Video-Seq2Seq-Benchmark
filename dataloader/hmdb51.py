@@ -46,4 +46,4 @@ def build_hmdb51_loader(root, annotation, num_workers,
                                    [batch[i][0][:, ::skip, :, :].unsqueeze(0) for i in range(len(batch))], 0
                                ),
                                torch.LongTensor([batch[i][2] for i in range(len(batch))]),
-                           ], timeout=10)
+                           ])

@@ -43,5 +43,4 @@ def build_kinetics_loader(video_root, num_workers,
                                ),
                                torch.LongTensor([batch[i][2] for i in range(len(batch))]),
                            ],
-                           persistent_workers=True,
-                           timeout=60)
+                           persistent_workers=True)
