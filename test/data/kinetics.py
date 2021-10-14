@@ -1,4 +1,4 @@
-from dataloader.kinetics import *
+from data.kinetics import *
 import unittest
 
 

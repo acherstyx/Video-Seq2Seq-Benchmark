@@ -1,6 +1,6 @@
 import torch.utils.data
 
-from dataloader.hmdb51 import *
+from data.hmdb51 import *
 import unittest
 import tqdm
 
@@ -45,8 +45,8 @@ class TestHMDB51(unittest.TestCase):
             print(l)
 
     def test_loader_build(self):
-        hmdb51 = build_hmdb51_loader(root="/mnt/workshop/hmdb51/hmdb51_video",
-                                     annotation="/mnt/workshop/hmdb51/testTrainMulti_7030_splits",
-                                     batch_size=1)
+        hmdb51 = build_hmdb51_set(root="/mnt/workshop/hmdb51/hmdb51_video",
+                                  annotation="/mnt/workshop/hmdb51/testTrainMulti_7030_splits",
+                                  batch_size=1)
         for v, a, l in hmdb51:
             print(l)

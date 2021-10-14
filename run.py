@@ -3,213 +3,156 @@ import torch
 import argparse
 import tqdm
 import logging
+from config import get_config, default_cfg
 from collections import OrderedDict
 from datetime import datetime
-from dataloader import build_hmdb51_loader, build_kinetics_loader
-from model import *
+from data import build_loader
+from model import build_model
 from torch.utils import data
 from torchsummary import summary
-from utils.train_utils import accuracy_metric, AvgMeter, summary_graph, ResetTimer, PreFetcher
+from utils.train_utils import *
 from torch.utils.tensorboard import SummaryWriter
-
-model_zoo = {
-    "conv3d": Conv3D,
-    "conv2d_lstm": Conv2DLSTM,
-    "slowfast": SlowFast,
-    "vivit": ViViT
-}
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 parser = argparse.ArgumentParser(description="Performance test")
 
-parser.add_argument("mod", choices=["train", "eval", "summary"])
-# data loader
-parser.add_argument("--fpc", type=int, default=64, help="frame per clip")
-parser.add_argument("-W", "--width", type=int, default=112)
-parser.add_argument("-H", "--height", type=int, default=112)
-parser.add_argument("--skip", type=int, default=2,
-                    help="drop some frame in the clip (default=2, 64fpc->32fpc)")
-#   dataset
-parser.add_argument("--workers", default=os.cpu_count(), type=int, help="dataloader num_worker")
-dataset_parser = parser.add_subparsers(help="chose a dataset to load", title="dataset")
-hmdb_parser = dataset_parser.add_parser("hmdb51")
-hmdb_parser.set_defaults(dataset="hmdb51")
-hmdb_parser.add_argument("--video", type=str, help="hmdb51 video file", required=True)
-hmdb_parser.add_argument("--annotation", type=str, help="hmdb51 split file", required=True)
-kinetics_parser = dataset_parser.add_parser("kinetics")
-kinetics_parser.set_defaults(dataset="kinetics")
-kinetics_parser.add_argument("--video", type=str, help="kinetics dataset video folder", required=True)
-# train
-parser.add_argument("--batch_size", "--bs", default=4, type=int)
-parser.add_argument("--split_train", "--st", default=1, type=int,
-                    help="(for low GPU memory) do optimize after [split_train] train step")
-parser.add_argument("--epoch", default=10, type=int)
-parser.add_argument("--eval_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
-parser.add_argument("--lr", default=0.001, type=float)
-parser.add_argument("--fine_tune", default=False, action="store_true", help="use fine tune mode")
-# log
-parser.add_argument("--log", "-l", default=None, type=str, required=True,
-                    help="directory to save tensorboard log and checkpoint")
-parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
-parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
-parser.add_argument("--name", type=str, default=None, help="naming log folder")
-# lr schedule
-parser.add_argument("--lr_schedule", type=tuple, default=None, help="decay at epoch")
-parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*decay_rate")
+# parser.add_argument("mod", choices=["train", "eval", "summary"])
+# # data loader
+# parser.add_argument("--fpc", type=int, default=64, help="frame per clip")
+# parser.add_argument("-W", "--width", type=int, default=112)
+# parser.add_argument("-H", "--height", type=int, default=112)
+# parser.add_argument("--skip", type=int, default=2,
+#                     help="drop some frame in the clip (default=2, 64fpc->32fpc)")
+# #   dataset
+# parser.add_argument("--workers", default=os.cpu_count(), type=int, help="dataloader num_worker")
+# dataset_parser = parser.add_subparsers(help="chose a dataset to load", title="dataset")
+# hmdb_parser = dataset_parser.add_parser("hmdb51")
+# hmdb_parser.set_defaults(dataset="hmdb51")
+# hmdb_parser.add_argument("--video", type=str, help="hmdb51 video file", required=True)
+# hmdb_parser.add_argument("--annotation", type=str, help="hmdb51 split file", required=True)
+# kinetics_parser = dataset_parser.add_parser("kinetics")
+# kinetics_parser.set_defaults(dataset="kinetics")
+# kinetics_parser.add_argument("--video", type=str, help="kinetics dataset video folder", required=True)
+# # train
+# parser.add_argument("--batch_size", "--bs", default=4, type=int)
+# parser.add_argument("--split_train", "--st", default=1, type=int,
+#                     help="(for low GPU memory) do optimize after [split_train] train step")
+# parser.add_argument("--epoch", default=10, type=int)
+# parser.add_argument("--eval_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
+# parser.add_argument("--lr", default=0.001, type=float)
+# parser.add_argument("--fine_tune", default=False, action="store_true", help="use fine tune mode")
+# # log
+# parser.add_argument("--log", "-l", default=None, type=str, required=True,
+#                     help="directory to save tensorboard log and checkpoint")
+# parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
+# parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
+# parser.add_argument("--name", type=str, default=None, help="naming log folder")
+# # lr schedule
+# parser.add_argument("--lr_schedule", type=str2tuple, default=None, help="decay at epoch")
+# parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*decay_rate")
+
+parser.add_argument("config", type=str, help="config file")
 
 
 def main():
     args = parser.parse_args()
-    timestamp = "{0:%Y-%m-%dT%H-%M-%SW}".format(datetime.now())
-    if args.name is None:
-        args.name = input("experiment name: ")
-    timestamp = os.path.join(args.name, timestamp) if args.name is not None else timestamp
-    log_dir = os.path.join(args.log, timestamp)
-    ckp_dir = os.path.join(log_dir, "checkpoint")
-    os.makedirs(ckp_dir, exist_ok=True)
+
+    config = get_config(args)
+
+    log_dir = os.path.join(config.LOG.LOG_DIR, config.EXPERIMENT_NAME)
+    ckpt_folder = os.path.join(log_dir, "checkpoint")
+    os.makedirs(ckpt_folder, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     logger.info("log dir: %s", log_dir)
 
     # net
-    logger.info("building model: %s", args.model)
-    if args.dataset == "hmdb51":
-        net: torch.nn.Module = model_zoo[args.model](num_classes=51)
-    elif args.dataset == "kinetics":
-        net: torch.nn.Module = model_zoo[args.model](num_classes=400)
-    else:
-        raise ValueError
+    logger.info(f"building model {config.MODEL.ARCH}...")
+    net = build_model(config)
     net.cuda()
-    # train
     writer = SummaryWriter(log_dir=log_dir)
-    writer.add_text("param", str(args.__dict__), global_step=0)
     criterion = torch.nn.CrossEntropyLoss()
 
-    if args.mod == "summary":
-        print((3, args.fpc, args.height, args.width))
-        summary(net, (3, args.fpc, args.height, args.width), device="cpu")
+    if config.MODE == "summary":
+        summary(
+            model=net,
+            input_size=(3, config.DATA.FRAME_PER_CLIP // config.DATA.SKIP_FRAME,
+                        config.DATA.IMG_SIZE[0], config.DATA.IMG_SIZE[1]),
+            device="cpu"
+        )
         # tensorboard graph
-        summary_graph((1, 3, args.fpc, args.height, args.width), net, writer)
+        summary_graph(
+            dummy_shape=(1, 3, config.DATA.FRAME_PER_CLIP // config.DATA.SKIP_FRAME,
+                         config.DATA.IMG_SIZE[0], config.DATA.IMG_SIZE[1]),
+            net=net,
+            summary_writer=writer
+        )
     else:
         # optimizer
-        optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_decay_rate)
+        optimizer = torch.optim.Adam(net.parameters(), lr=config.TRAIN.LR_BASE)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
+                                                    step_size=config.TRAIN.LR_SCHEDULER.DECAY_EPOCH,
+                                                    gamma=config.TRAIN.LR_SCHEDULER.DECAY_RATE)
 
-        if args.resume is not None and not args.fine_tune:
-            logger.info("resume from checkpoint... %s", args.resume)
-            state_dict = torch.load(args.resume)
-            assert state_dict["arch"] == args.model, "The model architecture is not match"
-            epoch_start = state_dict["epoch"]
-            optimizer.load_state_dict(state_dict["optimizer"])
-            scheduler.load_state_dict(state_dict["scheduler"])
-            net.load_state_dict(state_dict["model_param"])
-        elif args.resume is not None and args.fine_tune:
-            logger.info("resume from checkpoint... %s", args.resume)
-            state_dict = torch.load(args.resume)
-            assert state_dict["arch"] == args.model, "The model architecture is not match"
-            epoch_start = 0
-            # match model parameters
-            net_dict = net.state_dict()
-            logger.info("fine %s layers", len(state_dict["model_param"].items()))
-            state_dict["model_param"] = {k: v for k, v in state_dict["model_param"].items() if
-                                         (k in net_dict and net_dict[k].shape == v.shape)}
-            logger.info("resume %s layers from checkpoint", len(state_dict["model_param"].items()))
-            net_dict.update(state_dict["model_param"])
-            net.load_state_dict(OrderedDict(net_dict))
+        if config.MODEL.RESUME:
+            logger.info(f"resume from given checkpoint: {config.MODEL.RESUME}")
+            epoch_start = load_checkpoint(ckpt_file=config.MODEL.RESUME,
+                                          model=net,
+                                          optimizer=optimizer,
+                                          scheduler=scheduler)
+        elif config.TRAIN.AUTO_RESUME:
+            logger.info(f"auto resume...")
+            ckpt_file = auto_resume(ckpt_folder)
+            if ckpt_file is not None:
+                epoch_start = load_checkpoint(ckpt_file=ckpt_file,
+                                              model=net,
+                                              optimizer=optimizer,
+                                              scheduler=scheduler)
+                logger.info(f"auto resume from checkpoint {ckpt_file}")
+            else:
+                logger.info(f"no checkpoint file found")
+                epoch_start = 0
         else:
             epoch_start = 0
 
         # load train, eval and test data
         logger.info("creating data loader...")
+        dataloader_train, dataloader_val, dataloader_test = build_loader(config)
 
-        if args.dataset == "hmdb51":
-            dataloader_train = build_hmdb51_loader(args.video, args.annotation,
-                                                   num_workers=args.workers,
-                                                   batch_size=args.batch_size,
-                                                   skip=args.skip,
-                                                   train=True,
-                                                   size=(args.height, args.width),
-                                                   frame_per_clip=args.fpc)
-            dataloader_test = dataloader_val = build_hmdb51_loader(args.video, args.annotation,
-                                                                   num_workers=args.workers,
-                                                                   batch_size=args.batch_size,
-                                                                   skip=args.skip,
-                                                                   train=False,
-                                                                   size=(args.height, args.width),
-                                                                   frame_per_clip=args.fpc)
-        elif args.dataset == "kinetics":
-            dataloader_train = build_kinetics_loader(os.path.join(args.video, "train"),
-                                                     num_workers=args.workers,
-                                                     batch_size=args.batch_size,
-                                                     skip=args.skip,
-                                                     size=(args.height, args.width),
-                                                     train=True,
-                                                     frame_per_clip=args.fpc)
-            dataloader_val = build_kinetics_loader(os.path.join(args.video, "val"),
-                                                   num_workers=args.workers,
-                                                   batch_size=args.batch_size,
-                                                   skip=args.skip,
-                                                   size=(args.height, args.width),
-                                                   train=False,
-                                                   frame_per_clip=args.fpc)
-            dataloader_test = build_kinetics_loader(os.path.join(args.video, "test"),
-                                                    num_workers=args.workers,
-                                                    batch_size=args.batch_size,
-                                                    skip=args.skip,
-                                                    size=(args.height, args.width),
-                                                    train=False,
-                                                    frame_per_clip=args.fpc)
-        else:
-            raise ValueError
-        dataloader_train: data.DataLoader
-        dataloader_val: data.DataLoader
-        dataloader_test: data.DataLoader
-
-        if args.mod == "train":
+        if config.MODE == "train":
             logger.info("Training...")
-            for epoch in range(epoch_start, args.epoch):
+            for epoch in range(epoch_start, config.TRAIN.EPOCH):
                 try:
-                    logger.info("train epoch {}/{}:".format(epoch + 1, args.epoch))
+                    logger.info("train epoch {}/{}:".format(epoch + 1, config.TRAIN.EPOCH))
 
                     train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
-                          writer=writer, split=args.split_train)
+                          writer=writer, split=config.TRAIN.ACCUMULATION_STEP)
+                    scheduler.step()
 
-                    if args.lr_schedule is not None and (epoch + 1) in args.lr_schedule:
-                        optimizer.zero_grad()
-                        optimizer.step()
-                        scheduler.step()
-
-                    if (epoch + 1) % args.eval_freq == 0:
-                        # save
-                        ckp_file = "checkpoint_{}.pt".format(epoch + 1)
-                        ckp_path = os.path.join(ckp_dir, ckp_file)
-                        state_dict = {
-                            "epoch": epoch + 1,
-                            "arch": args.model,
-                            "model_param": net.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "scheduler": scheduler.state_dict()
-                        }
-                        torch.save(state_dict, ckp_path)
-                        logger.info("Checkpoint is saved to %s", ckp_path)
-                        # eval
+                    # save
+                    if (epoch + 1) % config.TRAIN.SAVE_FREQ == 0:
+                        ckpt_path = save_checkpoint(ckpt_folder=ckpt_folder,
+                                                    epoch=epoch + 1,
+                                                    model=net,
+                                                    optimizer=optimizer,
+                                                    scheduler=scheduler,
+                                                    config=config)
+                        logger.info("Checkpoint is saved to %s", ckpt_path)
+                    # eval
+                    if config.TRAIN.EVAL_FREQ != -1 and (epoch + 1) % config.TRAIN.EVAL_FREQ == 0:
                         logger.info("evaluating...")
                         loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
                         writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
                         writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
                 except Exception as e:
                     # error exit save
-                    ckp_file = "checkpoint_error_exit_epoch_{}.pt".format(epoch + 1)
-                    ckp_path = os.path.join(ckp_dir, ckp_file)
-                    state_dict = {
-                        "epoch": epoch + 1,
-                        "arch": args.model,
-                        "model_param": net.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict()
-                    }
-                    torch.save(state_dict, ckp_path)
-                    logger.critical("Catch exception, checkpoint is saved to %s", ckp_path)
+                    ckpt_path = save_checkpoint(ckpt_folder=ckpt_folder,
+                                                epoch="error_exit",
+                                                model=net,
+                                                optimizer=optimizer,
+                                                scheduler=scheduler,
+                                                config=config)
+                    logger.critical("Catch exception, checkpoint is saved to %s", ckpt_path)
                     logger.critical("Exiting...")
                     raise e
         else:
@@ -219,7 +162,6 @@ def main():
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
           criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1):
-    net.cuda()
     net.train()
     optimizer.zero_grad()
     data_loader = tqdm.tqdm(data_loader)
@@ -250,6 +192,7 @@ def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.o
             writer.add_scalars("train/time", time_log, total_step, )
             writer.add_scalar("train/lr", optimizer.state_dict()['param_groups'][0]['lr'], total_step)
             time_log["summary"] = timer()
+            time_log["total"] = sum([v if k != "total" else 0 for k, v in time_log.items()])
 
 
 def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metric):
@@ -257,7 +200,6 @@ def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metr
     top5 = AvgMeter("Acc@5", ":4.2f")
     avg_loss = AvgMeter("Loss", ":3.4f")
 
-    net.cuda()
     net.eval()
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Eval")

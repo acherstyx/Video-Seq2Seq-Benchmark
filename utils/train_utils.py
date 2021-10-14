@@ -1,5 +1,5 @@
 import time
-
+import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -96,3 +96,44 @@ class PreFetcher:
 
     def __iter__(self):
         return self
+
+
+def str2tuple(s: str):
+    assert s[0] == "(" and s[-1] == ")"
+    s = s[1:-1]
+    s = [int(x) for x in s.split(",")]
+    return tuple(s)
+
+
+def auto_resume(ckpt_folder):
+    ckpt_files = [ckpt for ckpt in os.listdir(ckpt_folder) if ckpt.endswith(".pth")]
+    if len(ckpt_files) > 0:
+        return max([os.path.join(ckpt_folder, file) for file in ckpt_folder], key=os.path.getmtime)
+    else:
+        return None
+
+
+def save_checkpoint(ckpt_folder, epoch, model, optimizer, scheduler, config):
+    stat_dict = {
+        "epoch": epoch,
+        "model": model,
+        "optimizer": optimizer,
+        "scheduler": scheduler,
+        "config": config
+    }
+    ckpt_path = os.path.join(ckpt_folder, f"checkpoint_{epoch}.pth")
+    torch.save(stat_dict, ckpt_path)
+    return ckpt_path
+
+
+def load_checkpoint(ckpt_file, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler):
+    stat_dict = torch.load(ckpt_file, map_location="cpu")
+    missing = model.load_state_dict(stat_dict["model"], strict=False)
+    if missing:
+        print(f"Key missing from checkpoint:{missing}")
+    optimizer.load_state_dict(stat_dict["optimizer"])
+    scheduler.load_state_dict(stat_dict["scheduler"])
+    epoch = stat_dict["epoch"]
+    del stat_dict
+    torch.cuda.empty_cache()
+    return epoch  # start epoch

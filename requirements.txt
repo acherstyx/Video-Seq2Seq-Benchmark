@@ -1,8 +1,10 @@
 torch
-einops~=0.3.2
-torchsummary~=1.5.1
+einops
+torchsummary
 torchvision
 tqdm
 av
 numpy
 tensorboard
+PyYAML
+yacs

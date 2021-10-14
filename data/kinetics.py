@@ -3,6 +3,7 @@ from torch.utils import data
 from torchvision.datasets import Kinetics400
 from torchvision.transforms import *
 from torchvision.transforms._transforms_video import ToTensorVideo
+from .metadata import save_metadata, load_metadata
 import warnings
 
 warnings.simplefilter("ignore", UserWarning)
@@ -21,26 +22,21 @@ def build_kinetics_loader(video_root, num_workers,
             CenterCrop(size),
         ])
 
-    metadata_path = os.path.join(video_root, "metadata_cache.pt")
-    if os.path.exists(metadata_path):
-        metadata = torch.load(metadata_path)
-    else:
-        metadata = None
+    metadata = load_metadata(video_root)
     kinetics = Kinetics400(
         video_root, frames_per_clip=frame_per_clip, step_between_clips=frame_per_clip,
         extensions=('mp4', 'avi'), transform=transforms,
         _precomputed_metadata=metadata,
         num_workers=os.cpu_count()  # for loading video metadata
     )
-    if not os.path.exists(metadata_path):
-        torch.save(kinetics.metadata, metadata_path)
+    save_metadata(video_root, metadata)
 
     return data.DataLoader(kinetics, batch_size,
-                           shuffle=True, num_workers=num_workers, pin_memory=True, prefetch_factor=1,
+                           shuffle=True, num_workers=num_workers, persistent_workers=True, pin_memory=True,
+                           prefetch_factor=1,
                            collate_fn=lambda batch: [
                                torch.cat(
                                    [batch[i][0][:, ::skip, :, :].unsqueeze(0) for i in range(len(batch))], 0
                                ),
                                torch.LongTensor([batch[i][2] for i in range(len(batch))]),
-                           ],
-                           persistent_workers=True)
+                           ])
