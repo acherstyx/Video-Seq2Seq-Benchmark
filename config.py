@@ -1,4 +1,3 @@
-import yaml
 from yacs.config import CfgNode as CN
 
 _C = CN()
@@ -20,6 +19,7 @@ _C.MODEL.NUM_CLASSES = 51
 _C.MODEL.ARCH = "slowfast"
 _C.MODEL.NAME = "slowfast"
 _C.MODEL.RESUME = ""
+_C.MODEL.USE_CHECKPOINT = False
 # =====>slowfast
 _C.MODEL.SLOWFAST = CN()
 # =====>vivit
@@ -69,7 +69,6 @@ _C.TRAIN.SAVE_FREQ = 1
 _C.TRAIN.EVAL_FREQ = 1  # set -1 to disable evaluation during training
 # resume from latest checkpoint
 _C.TRAIN.AUTO_RESUME = True
-
 # lr settings
 _C.TRAIN.LR_BASE = 1e-4
 _C.TRAIN.CLIP_GRAD = 5.0
@@ -87,18 +86,52 @@ _C.LOG = CN()
 _C.LOG.LOG_DIR = "./log"
 
 
-def check_config(config):
+def __check_config(config):
+    # check fpc
     if config.MODEL.ARCH == "vivit":
         assert config.DATA.FRAME_PER_CLIP // config.DATA.SKIP_FRAME == config.MODEL.VIVIT.FRAME_PER_CLIP
+    # check dataset
+    if config.DATA.DATASET == "hmdb51":
+        assert config.MODEL.NUM_CLASSES == 51, "class number not match"
+    elif config.DATA.DATASET == "kinetics":  # kinetics-400
+        assert config.MODEL.NUM_CLASSES == 400, "class number not match"
+    else:
+        raise NotImplementedError(f"dataset {config.DATA.DATASET} is not supported")
+
+
+def __parse_args_config(args):
+    config_list = []
+    # set mode
+    config_list += ["MODE", args.mode]
+    # set dataset path
+    config_list += ["DATA.DATASET", args.dataset]
+    if args.dataset == "hmdb51":
+        config_list += ["DATA.HMDB51.VIDEO_FOLDER", args.video]
+        config_list += ["DATA.HMDB51.ANNOTATION", args.annotation]
+    elif args.dataset == "kinetics":
+        config_list += ["DATA.KINETICS.VIDEO_FOLDER", args.video]
+    else:
+        raise ValueError(f"dataset {args.dataset} is not set in the config")
+    return config_list
 
 
 def get_config(args):
     config = _C.clone()
-    config.merge_from_file(args.config)
+    # update from config file
+    if args.config is not None:
+        config.merge_from_file(args.config)
+    # update from cmd args
+    #   set dataset folder
+    config.merge_from_list(__parse_args_config(args))
+    # do some check
+    __check_config(config)
+
     config.freeze()
-    check_config(config)
     return config
 
 
 default_cfg = _C
 default_cfg.freeze()
+
+if __name__ == '__main__':
+    print(default_cfg)

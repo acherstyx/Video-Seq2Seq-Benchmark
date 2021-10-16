@@ -2,6 +2,7 @@ import time
 import os
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from collections import OrderedDict
 
 
 def accuracy_metric(logits, target, topk=(1,)):
@@ -98,42 +99,82 @@ class PreFetcher:
         return self
 
 
-def str2tuple(s: str):
-    assert s[0] == "(" and s[-1] == ")"
-    s = s[1:-1]
-    s = [int(x) for x in s.split(",")]
-    return tuple(s)
-
-
 def auto_resume(ckpt_folder):
     ckpt_files = [ckpt for ckpt in os.listdir(ckpt_folder) if ckpt.endswith(".pth")]
     if len(ckpt_files) > 0:
-        return max([os.path.join(ckpt_folder, file) for file in ckpt_folder], key=os.path.getmtime)
+        return max([os.path.join(ckpt_folder, file) for file in ckpt_files], key=os.path.getmtime)
     else:
         return None
 
 
-def save_checkpoint(ckpt_folder, epoch, model, optimizer, scheduler, config):
+def save_checkpoint(ckpt_folder, epoch, model, optimizer, scheduler, config, prefix=""):
     stat_dict = {
         "epoch": epoch,
-        "model": model,
-        "optimizer": optimizer,
-        "scheduler": scheduler,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
         "config": config
     }
-    ckpt_path = os.path.join(ckpt_folder, f"checkpoint_{epoch}.pth")
+    ckpt_path = os.path.join(ckpt_folder, f"checkpoint{prefix}_{epoch}.pth")
     torch.save(stat_dict, ckpt_path)
     return ckpt_path
 
 
-def load_checkpoint(ckpt_file, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler):
-    stat_dict = torch.load(ckpt_file, map_location="cpu")
-    missing = model.load_state_dict(stat_dict["model"], strict=False)
-    if missing:
-        print(f"Key missing from checkpoint:{missing}")
-    optimizer.load_state_dict(stat_dict["optimizer"])
-    scheduler.load_state_dict(stat_dict["scheduler"])
-    epoch = stat_dict["epoch"]
-    del stat_dict
+def load_checkpoint(ckpt_file, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler,
+                    restart_train=False):
+    state_dict = torch.load(ckpt_file, map_location="cpu")
+    try:
+        missing = model.load_state_dict(state_dict["model"], strict=False)
+        if missing:
+            print(f"checkpoint key missing: {missing}")
+    except RuntimeError:  # tensor shape mismatch (change num_classes)
+        print("fail to directly recover from checkpoint, try to match each layers...")
+        net_dict = model.state_dict()
+        print("find %s layers", len(state_dict["model"].items()))
+        state_dict["model"] = {k: v for k, v in state_dict["model"].items() if
+                               (k in net_dict and net_dict[k].shape == v.shape)}
+        print("resume %s layers from checkpoint", len(state_dict["model"].items()))
+        net_dict.update(state_dict["model"])
+        model.load_state_dict(OrderedDict(net_dict))
+
+    if not restart_train:
+        # remove optimizer state
+        state_dict["optimizer"]["state"] = optimizer.state
+        state_dict["optimizer"]["param_groups"][0]["params"] = optimizer.param_groups[0]["params"]
+        optimizer.load_state_dict(state_dict["optimizer"])
+        scheduler.load_state_dict(state_dict["scheduler"])
+        epoch = state_dict["epoch"]
+    else:
+        print("restart train, optimizer and scheduler will not be resumed")
+        epoch = 0
+
+    del state_dict
     torch.cuda.empty_cache()
     return epoch  # start epoch
+
+
+class TrainErrorHelper:
+    def __init__(self, ckpt_folder, model, optimizer, scheduler, config, epoch, logger=None):
+        self.ckpt_folder = ckpt_folder
+        self.model = model
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.config = config
+        self.logger = logger
+        self.epoch = epoch
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        ckpt_path = save_checkpoint(ckpt_folder=self.ckpt_folder,
+                                    epoch=self.epoch,
+                                    model=self.model,
+                                    optimizer=self.optimizer,
+                                    scheduler=self.scheduler,
+                                    config=self.config,
+                                    prefix="_error_exit")
+        if exc_type is not None and self.logger is not None:
+            self.logger.critical("catch exception, checkpoint is saved to %s", ckpt_path)
+            self.logger.critical("exiting...")
+        return False

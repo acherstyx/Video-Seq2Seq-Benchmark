@@ -17,63 +17,43 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 parser = argparse.ArgumentParser(description="Performance test")
 
-# parser.add_argument("mod", choices=["train", "eval", "summary"])
-# # data loader
-# parser.add_argument("--fpc", type=int, default=64, help="frame per clip")
-# parser.add_argument("-W", "--width", type=int, default=112)
-# parser.add_argument("-H", "--height", type=int, default=112)
-# parser.add_argument("--skip", type=int, default=2,
-#                     help="drop some frame in the clip (default=2, 64fpc->32fpc)")
-# #   dataset
-# parser.add_argument("--workers", default=os.cpu_count(), type=int, help="dataloader num_worker")
-# dataset_parser = parser.add_subparsers(help="chose a dataset to load", title="dataset")
-# hmdb_parser = dataset_parser.add_parser("hmdb51")
-# hmdb_parser.set_defaults(dataset="hmdb51")
-# hmdb_parser.add_argument("--video", type=str, help="hmdb51 video file", required=True)
-# hmdb_parser.add_argument("--annotation", type=str, help="hmdb51 split file", required=True)
-# kinetics_parser = dataset_parser.add_parser("kinetics")
-# kinetics_parser.set_defaults(dataset="kinetics")
-# kinetics_parser.add_argument("--video", type=str, help="kinetics dataset video folder", required=True)
-# # train
-# parser.add_argument("--batch_size", "--bs", default=4, type=int)
-# parser.add_argument("--split_train", "--st", default=1, type=int,
-#                     help="(for low GPU memory) do optimize after [split_train] train step")
-# parser.add_argument("--epoch", default=10, type=int)
-# parser.add_argument("--eval_freq", default=1, type=int, help="for every N epoch, run eval and save checkpoint")
-# parser.add_argument("--lr", default=0.001, type=float)
-# parser.add_argument("--fine_tune", default=False, action="store_true", help="use fine tune mode")
-# # log
-# parser.add_argument("--log", "-l", default=None, type=str, required=True,
-#                     help="directory to save tensorboard log and checkpoint")
-# parser.add_argument("--model", type=str, choices=[k for k, v in model_zoo.items()], default="conv3d")
-# parser.add_argument("--resume", type=str, default=None, help="resume from checkpoint")
-# parser.add_argument("--name", type=str, default=None, help="naming log folder")
-# # lr schedule
-# parser.add_argument("--lr_schedule", type=str2tuple, default=None, help="decay at epoch")
-# parser.add_argument("--lr_decay_rate", type=float, default=0.1, help="lr=lr*decay_rate")
-
-parser.add_argument("config", type=str, help="config file")
+parser.add_argument("mode", type=str, choices=["train", "eval", "summary", "fine-tune"])
+parser.add_argument("config", type=str, help="config file", default=None)
+dataset_parser = parser.add_subparsers(title="dataset",
+                                       dest="dataset",
+                                       metavar="dataset",
+                                       help="chose a dataset to load {hmdb51,kinetics}", )
+hmdb_parser = dataset_parser.add_parser("hmdb51")
+hmdb_parser.set_defaults(dataset="hmdb51")
+hmdb_parser.add_argument("--video", type=str, help="hmdb51 video file", required=True)
+hmdb_parser.add_argument("--annotation", type=str, help="hmdb51 split file", required=True)
+kinetics_parser = dataset_parser.add_parser("kinetics")
+kinetics_parser.set_defaults(dataset="kinetics")
+kinetics_parser.add_argument("--video", type=str, help="kinetics dataset video folder", required=True)
 
 
 def main():
     args = parser.parse_args()
-
     config = get_config(args)
 
     log_dir = os.path.join(config.LOG.LOG_DIR, config.EXPERIMENT_NAME)
-    ckpt_folder = os.path.join(log_dir, "checkpoint")
+    if config.MODE == "fine-tune":
+        ckpt_folder_prefix = "fine-tune_"
+    else:
+        ckpt_folder_prefix = ""
+    ckpt_folder = os.path.join(log_dir, f"{ckpt_folder_prefix}checkpoint")
     os.makedirs(ckpt_folder, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     logger.info("log dir: %s", log_dir)
 
     # net
-    logger.info(f"building model {config.MODEL.ARCH}...")
+    logger.info(f"building model ({config.MODEL.ARCH})...")
     net = build_model(config)
     net.cuda()
-    writer = SummaryWriter(log_dir=log_dir)
     criterion = torch.nn.CrossEntropyLoss()
 
     if config.MODE == "summary":
+        writer = SummaryWriter(log_dir=log_dir)
         summary(
             model=net,
             input_size=(3, config.DATA.FRAME_PER_CLIP // config.DATA.SKIP_FRAME,
@@ -94,41 +74,48 @@ def main():
                                                     step_size=config.TRAIN.LR_SCHEDULER.DECAY_EPOCH,
                                                     gamma=config.TRAIN.LR_SCHEDULER.DECAY_RATE)
 
+        # use specified model will restart the training process
+        # for example: during fine-tune from pre-trained model
+        restart_train = bool(config.MODEL.RESUME)
+        if config.TRAIN.AUTO_RESUME:
+            logger.info(f"auto resume...")
+            ckpt_file = auto_resume(ckpt_folder)
+            if ckpt_file is not None:  # find checkpoint and start auto resume
+                if config.MODEL.RESUME:
+                    logger.info(f"auto resume from checkpoint {ckpt_file}, ignore checkpoint f{config.MODEL.RESUME}")
+                config.defrost()
+                config.MODEL.RESUME = ckpt_file
+                config.freeze()
+                restart_train = False  # disable restart if use auto resume
+            else:  # no auto resume
+                logger.info(f"no checkpoint fount in {ckpt_folder}")
+        # resume
         if config.MODEL.RESUME:
             logger.info(f"resume from given checkpoint: {config.MODEL.RESUME}")
             epoch_start = load_checkpoint(ckpt_file=config.MODEL.RESUME,
                                           model=net,
                                           optimizer=optimizer,
-                                          scheduler=scheduler)
-        elif config.TRAIN.AUTO_RESUME:
-            logger.info(f"auto resume...")
-            ckpt_file = auto_resume(ckpt_folder)
-            if ckpt_file is not None:
-                epoch_start = load_checkpoint(ckpt_file=ckpt_file,
-                                              model=net,
-                                              optimizer=optimizer,
-                                              scheduler=scheduler)
-                logger.info(f"auto resume from checkpoint {ckpt_file}")
-            else:
-                logger.info(f"no checkpoint file found")
-                epoch_start = 0
+                                          scheduler=scheduler,
+                                          restart_train=restart_train)
         else:
-            epoch_start = 0
+            epoch_start = 0  # train from scratch
 
         # load train, eval and test data
-        logger.info("creating data loader...")
+        logger.info(f"creating data loader ({config.DATA.DATASET})...")
         dataloader_train, dataloader_val, dataloader_test = build_loader(config)
+        # create tensorboard summary writer
+        writer = SummaryWriter(log_dir=log_dir, purge_step=epoch_start * len(dataloader_train))
 
-        if config.MODE == "train":
+        if config.MODE == "train" or config.MODE == "fine-tune":
             logger.info("Training...")
             for epoch in range(epoch_start, config.TRAIN.EPOCH):
-                try:
+                with TrainErrorHelper(ckpt_folder=log_dir, model=net, optimizer=optimizer, scheduler=scheduler,
+                                      config=config, logger=logger, epoch=epoch):
+                    # train one epoch
                     logger.info("train epoch {}/{}:".format(epoch + 1, config.TRAIN.EPOCH))
-
                     train(dataloader_train, net, optimizer, criterion, accuracy_metric, epoch,
-                          writer=writer, split=config.TRAIN.ACCUMULATION_STEP)
+                          writer=writer, split=config.TRAIN.ACCUMULATION_STEP, mode=config.MODE)
                     scheduler.step()
-
                     # save
                     if (epoch + 1) % config.TRAIN.SAVE_FREQ == 0:
                         ckpt_path = save_checkpoint(ckpt_folder=ckpt_folder,
@@ -140,35 +127,29 @@ def main():
                         logger.info("Checkpoint is saved to %s", ckpt_path)
                     # eval
                     if config.TRAIN.EVAL_FREQ != -1 and (epoch + 1) % config.TRAIN.EVAL_FREQ == 0:
-                        logger.info("evaluating...")
+                        logger.info("Evaluating...")
                         loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
                         writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
                         writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
-                except Exception as e:
-                    # error exit save
-                    ckpt_path = save_checkpoint(ckpt_folder=ckpt_folder,
-                                                epoch="error_exit",
-                                                model=net,
-                                                optimizer=optimizer,
-                                                scheduler=scheduler,
-                                                config=config)
-                    logger.critical("Catch exception, checkpoint is saved to %s", ckpt_path)
-                    logger.critical("Exiting...")
-                    raise e
-        else:
+        elif config.MODE == "eval":
             eval(dataloader_test, net, criterion, accuracy_metric)
+        else:
+            raise ValueError
     writer.close()
 
 
 def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.optim.Optimizer,
-          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1):
+          criterion: torch.nn.Module, acc_metric, epoch, writer=None, split=1, mode="train"):
+    net.cuda()
     net.train()
     optimizer.zero_grad()
     data_loader = tqdm.tqdm(data_loader)
-    data_loader.set_description("Train")
+    data_loader.set_description(f"{mode}")
     timer = ResetTimer()
     time_log = {}
     for step, (video, label) in enumerate(PreFetcher(data_loader, device="cuda:0")):
+        video = video / 225
+        video.cuda()
         time_log["load_data"] = timer()
 
         logits = net(video)
@@ -187,10 +168,10 @@ def train(data_loader: data.DataLoader, net: torch.nn.Module, optimizer: torch.o
 
         if writer is not None:
             total_step = step + epoch * len(data_loader)
-            writer.add_scalars("train/acc", {"top1": acc1, "top5": acc5}, total_step)
-            writer.add_scalar("train/loss", loss, total_step)
-            writer.add_scalars("train/time", time_log, total_step, )
-            writer.add_scalar("train/lr", optimizer.state_dict()['param_groups'][0]['lr'], total_step)
+            writer.add_scalars(f"{mode}/acc", {"top1": acc1, "top5": acc5}, total_step)
+            writer.add_scalar(f"{mode}/loss", loss, total_step)
+            writer.add_scalars(f"{mode}/time", time_log, total_step, )
+            writer.add_scalar(f"{mode}/lr", optimizer.state_dict()['param_groups'][0]['lr'], total_step)
             time_log["summary"] = timer()
             time_log["total"] = sum([v if k != "total" else 0 for k, v in time_log.items()])
 
@@ -200,13 +181,14 @@ def eval(data_loader: data.DataLoader, net: torch.nn.Module, criterion, acc_metr
     top5 = AvgMeter("Acc@5", ":4.2f")
     avg_loss = AvgMeter("Loss", ":3.4f")
 
+    net.cuda()
     net.eval()
     data_loader = tqdm.tqdm(data_loader)
     data_loader.set_description("Eval")
     with torch.no_grad():
-        for step, (video, label) in enumerate(data_loader):
-            video = video.cuda(non_blocking=True)
-            label = label.cuda(non_blocking=True)
+        for step, (video, label) in enumerate(PreFetcher(data_loader, device="cuda:0")):
+            video = video / 225
+            video.cuda()
 
             logits = net(video)
 

@@ -16,8 +16,9 @@ def build_model(config):
                       w=config.MODEL.VIVIT.W,
                       n_head=config.MODEL.VIVIT.NUM_HEAD,
                       n_layer=config.MODEL.VIVIT.NUM_LAYER,
-                      patch_dim=config.MODEL.VIVIT.D_MODEL,
-                      d_feature=config.MODEL.VIVIT.D_FEATURE)
+                      d_model=config.MODEL.VIVIT.D_MODEL,
+                      d_feature=config.MODEL.VIVIT.D_FEATURE,
+                      use_checkpoint=config.MODEL.USE_CHECKPOINT)
     else:
         raise NotImplementedError(f"{model_arch}")
 

@@ -2,44 +2,61 @@ import torch
 import torch.nn as nn
 import einops
 import torch.nn.functional as F
+from torch.utils import checkpoint
 
 
 class ViViT(nn.Module):
     def __init__(self, num_classes,
                  size=(224, 224), frame_per_clip=32,
-                 t=2, h=16, w=16, n_head=12, n_layer=12, patch_dim=512, d_feature=2048):
+                 t=2, h=16, w=16, n_head=12, n_layer=12, d_model=512, d_feature=2048,
+                 use_checkpoint=False):
         super(ViViT, self).__init__()
 
+        # size of tubelets
         self.t = t
         self.h = h
         self.w = w
+        # number of tubelets
         self.n_t = frame_per_clip // t
         self.n_h = size[0] // h
         self.n_w = size[1] // w
         self.N = self.n_t * self.n_h * self.n_w
+        self.use_checkpoint = use_checkpoint
+        self.n_layer = n_layer
 
-        self.embed_projection = nn.Linear(self.t * self.h * self.w * 3, patch_dim)
+        self.embed_projection = nn.Linear(self.t * self.h * self.w * 3, d_model)
         self.encoder_layer = [FactorisedTransformerLayer(self.n_t, self.n_h, self.n_w, n_head,
-                                                         d_model=patch_dim,
+                                                         d_model=d_model,
                                                          d_feature=d_feature)
-                              for _ in range(n_layer)]
+                              for _ in range(self.n_layer)]
         self.encoder_layer = nn.Sequential(*self.encoder_layer)
 
+        # positional embedding
+        self.positional_embedding = torch.nn.Parameter(torch.zeros(1, self.n_t, self.n_h, self.n_w, d_model))
+
         self.mlp_head = nn.Sequential(
-            nn.LayerNorm(patch_dim),
-            nn.Linear(patch_dim, num_classes)
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, num_classes)
         )
 
     def forward(self, x):
         # x: (B,C,N,H,W)
         x = einops.rearrange(x, "b c (n_t t) (n_h h) (n_w w) -> b n_t n_h n_w (t h w c)",
                              t=self.t, h=self.h, w=self.w)
-        token = self.embed_projection(x)
-        token = self.encoder_layer(token)
+        if self.use_checkpoint:
+            token = checkpoint.checkpoint(self.embed_projection, x)
+            token = checkpoint.checkpoint_sequential(self.encoder_layer, self.n_layer, token)
+        else:
+            token = self.embed_projection(x)
+            token = self.encoder_layer(token)
+        token = token + self.positional_embedding
         # mlp head
         token = einops.rearrange(token, "n n_t n_h n_w d_model->n (n_t n_h n_w) d_model")
         token = torch.mean(token, dim=1)
-        logits = self.mlp_head(token)
+        if self.use_checkpoint:
+            logits = checkpoint.checkpoint(self.mlp_head, token)
+        else:
+            logits = self.mlp_head(token)
         return logits
 
 
