@@ -45,11 +45,12 @@ class ViViT(nn.Module):
                              t=self.t, h=self.h, w=self.w)
         if self.use_checkpoint:
             token = checkpoint.checkpoint(self.embed_projection, x)
+            token = token + self.positional_embedding
             token = checkpoint.checkpoint_sequential(self.encoder_layer, self.n_layer, token)
         else:
             token = self.embed_projection(x)
+            token = token + self.positional_embedding
             token = self.encoder_layer(token)
-        token = token + self.positional_embedding
         # mlp head
         token = einops.rearrange(token, "n n_t n_h n_w d_model->n (n_t n_h n_w) d_model")
         token = torch.mean(token, dim=1)
@@ -58,6 +59,28 @@ class ViViT(nn.Module):
         else:
             logits = self.mlp_head(token)
         return logits
+
+    @torch.no_grad()
+    def heatmap(self, x):
+        x = einops.rearrange(x, "b c (n_t t) (n_h h) (n_w w) -> b n_t n_h n_w (t h w c)",
+                             t=self.t, h=self.h, w=self.w)
+        token = self.embed_projection(x)
+        token = token + self.positional_embedding
+        cam = token = self.encoder_layer(token)
+
+        token = einops.rearrange(token, "n n_t n_h n_w d_model->n (n_t n_h n_w) d_model")
+        token = torch.mean(token, dim=1)
+        logits = self.mlp_head(token)
+        index = torch.argmax(logits, dim=-1)
+
+        # class activation mapping
+        cam = self.mlp_head(cam)
+        cam = torch.stack([cam_i[:, :, :, cls] for cam_i, cls in zip(cam, index)])
+
+        cam = einops.repeat(cam, "n n_t n_h n_w->n (n_t t) (n_h h) (n_w w)",
+                            t=self.t, h=self.h, w=self.w).detach().cpu().numpy()
+
+        return cam
 
 
 class FactorisedTransformerLayer(nn.Module):

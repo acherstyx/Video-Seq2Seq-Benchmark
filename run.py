@@ -1,4 +1,7 @@
 import os
+
+import einops
+import numpy as np
 import torch
 import argparse
 import tqdm
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 parser = argparse.ArgumentParser(description="Performance test")
 
-parser.add_argument("mode", type=str, choices=["train", "eval", "summary", "fine-tune"])
+parser.add_argument("mode", type=str, choices=["train", "eval", "summary", "fine-tune", "heatmap"])
 parser.add_argument("config", type=str, help="config file", default=None)
 dataset_parser = parser.add_subparsers(title="dataset",
                                        dest="dataset",
@@ -67,6 +70,7 @@ def main():
             net=net,
             summary_writer=writer
         )
+
     else:
         # optimizer
         optimizer = torch.optim.Adam(net.parameters(), lr=config.TRAIN.LR_BASE)
@@ -131,6 +135,27 @@ def main():
                         loss, top1, top5 = eval(dataloader_val, net, criterion, accuracy_metric)
                         writer.add_scalars("eval/acc", {"top1": top1, "top5": top5}, global_step=epoch + 1)
                         writer.add_scalar("eval/loss", loss, global_step=epoch + 1)
+        elif config.MODE == "heatmap":
+            with torch.no_grad():
+                data_loader_train, _, _ = build_loader(config)
+                for video, label in data_loader_train:
+                    video = video / 255
+                    video = video.cuda()
+                    net.cuda()
+                    heatmap = net.heatmap(video)
+                    video = einops.rearrange(video, "batch c t h w->batch t h w c")
+                    heatmap = einops.repeat(heatmap, "batch t h w->batch t h w c", c=3)
+                    heatmap = heatmap - np.min(heatmap)
+                    heatmap = heatmap / np.max(heatmap)
+                    import matplotlib.pyplot as plt
+
+                    video = video.detach().cpu().numpy()
+                    vis = np.stack([video, heatmap])
+                    vis = einops.rearrange(vis, "two batch (t1 t2) h w c->batch (t1 h) (t2 two w) c", t2=4)
+                    for vis_img in vis:
+                        plt.imshow(vis_img,)
+                        plt.show()
+                    pass
         elif config.MODE == "eval":
             eval(dataloader_test, net, criterion, accuracy_metric)
         else:

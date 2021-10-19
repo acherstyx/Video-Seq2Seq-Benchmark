@@ -1,0 +1,21 @@
+EXPERIMENT_NAME: "vivit_fine-tune"
+
+MODEL:
+  NAME: "vivit"
+  ARCH: "vivit"
+  NUM_CLASSES: 51
+  USE_CHECKPOINT: True
+  RESUME: ""
+
+TRAIN:
+  EPOCH: 30
+  LR_BASE: 5e-4
+  EVAL_FREQ: 1
+
+  LR_SCHEDULER:
+    DECAY_RATE: 0.2
+    DECAY_EPOCH: 10
+
+DATA:
+  BATCH_SIZE: 24
+  NUM_WORKER: 24
