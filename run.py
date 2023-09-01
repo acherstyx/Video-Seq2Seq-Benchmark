@@ -53,6 +53,7 @@ def main():
     logger.info(f"building model ({config.MODEL.ARCH})...")
     net = build_model(config)
     net.cuda()
+    net = torch.nn.DataParallel(net)
     criterion = torch.nn.CrossEntropyLoss()
 
     if config.MODE == "summary":

@@ -1,7 +1,8 @@
 import os
+import torch
 from torch.utils import data
 from torchvision.datasets import HMDB51
-from torchvision.transforms import *
+from torchvision.transforms import Compose, RandomResizedCrop, Resize, CenterCrop
 import warnings
 from .metadata import save_metadata, load_metadata
 import einops

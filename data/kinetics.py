@@ -1,7 +1,8 @@
 import os
+import torch
 from torch.utils import data
 from torchvision.datasets import Kinetics400
-from torchvision.transforms import *
+from torchvision.transforms import Compose, RandomResizedCrop, Resize, CenterCrop
 from .metadata import save_metadata, load_metadata
 import warnings
 import einops
